@@ -1,0 +1,409 @@
+"""Status page, admin page, and scheduler."""
+
+from __future__ import annotations
+
+import logging
+import secrets
+import threading
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import uvicorn
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, ValidationError
+
+from app.config import (
+    RuntimeSettings,
+    Settings,
+    SettingsWrite,
+    apply_update,
+    load_settings,
+    public_settings,
+    save_settings,
+)
+from app.plex import PlexClient
+from app.service import (
+    SeriesNotFound,
+    delete_later_seasons,
+    download_later_seasons,
+    preview_series,
+    run_cycle,
+)
+from app.sonarr import SonarrClient, SonarrError
+from app.state import State
+
+logger = logging.getLogger("season_keeper")
+PAGE = Path(__file__).with_name("status_page.html").read_text(encoding="utf-8")
+ADMIN_PAGE = Path(__file__).with_name("admin_page.html").read_text(encoding="utf-8")
+NO_STORE = {"Cache-Control": "no-store"}
+_SETUP_REQUIRED = "Save Sonarr and Plex on the admin page first"
+
+
+class Holder:
+    def __init__(self) -> None:
+        self.settings: Settings | None = None
+        self.state: State | None = None
+        self.lock = threading.Lock()
+        self.scheduler: BackgroundScheduler | None = None
+        self.running = False
+
+
+holder = Holder()
+
+
+class ConfirmBody(BaseModel):
+    confirm: bool = False
+
+
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _clients(settings: Settings) -> tuple[SonarrClient, PlexClient]:
+    sonarr = SonarrClient(settings.sonarr_base, settings.sonarr_api_key, settings.http_timeout_seconds)
+    plex = PlexClient(
+        settings.plex_base,
+        settings.plex_token,
+        settings.http_timeout_seconds,
+        settings.library_timeout_seconds,
+        settings.history_page_size,
+        settings.history_max_items,
+        settings.hydrate_limit,
+    )
+    return sonarr, plex
+
+
+def _validation_message(exc: ValidationError) -> str:
+    parts = []
+    for error in exc.errors():
+        loc = ".".join(str(item) for item in error.get("loc", ()) if item != "body")
+        message = error.get("msg") or "Invalid settings"
+        parts.append(f"{loc}: {message}" if loc else message)
+    return "; ".join(parts) or "Invalid settings"
+
+
+def _arm_schedule(settings: Settings, *, first: bool) -> None:
+    scheduler = holder.scheduler
+    if scheduler is None or not settings.configured:
+        return
+    if scheduler.get_job("cycle"):
+        scheduler.reschedule_job(
+            "cycle",
+            trigger="interval",
+            minutes=settings.watch_interval_minutes,
+        )
+        return
+    if first and settings.run_on_startup:
+        delay = settings.startup_delay_seconds
+    else:
+        delay = settings.watch_interval_minutes * 60
+    first_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
+    scheduler.add_job(
+        cycle,
+        "interval",
+        minutes=settings.watch_interval_minutes,
+        next_run_time=first_run,
+        id="cycle",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+
+
+def cycle() -> bool:
+    settings = holder.settings
+    state = holder.state
+    if settings is None or state is None:
+        return False
+    if not settings.configured:
+        logger.info("Skipped a cycle because Sonarr and Plex are not saved on the admin page")
+        return False
+    if not holder.lock.acquire(blocking=False):
+        logger.info("Skipped a cycle because another run is in progress")
+        return False
+    holder.running = True
+    sonarr = None
+    plex = None
+    try:
+        sonarr, plex = _clients(settings)
+        report = run_cycle(settings, state, sonarr, plex)
+        if report.error:
+            logger.error("Cycle error: %s", report.error)
+    except Exception:
+        logger.exception("Cycle crashed")
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+        if plex is not None:
+            plex.close()
+        holder.running = False
+        holder.lock.release()
+    return True
+
+
+def _require_token(request: Request) -> None:
+    settings = holder.settings
+    if settings is None or not settings.app_token:
+        return
+    header = request.headers.get("authorization", "")
+    supplied = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    if not secrets.compare_digest(supplied, settings.app_token):
+        raise HTTPException(status_code=401, detail="Missing or wrong token")
+
+
+def _require_ready() -> Settings:
+    if holder.settings is None or holder.state is None:
+        raise HTTPException(status_code=503, detail="Season Keeper is still starting")
+    return holder.settings
+
+
+def _require_configured(settings: Settings) -> None:
+    if not settings.configured:
+        raise HTTPException(status_code=400, detail=_SETUP_REQUIRED)
+
+
+def _accept_write(current: Settings, body: SettingsWrite) -> Settings:
+    try:
+        return apply_update(current, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=_validation_message(exc)) from exc
+
+
+def _safe_detail(exc: Exception, settings: Settings) -> str:
+    text = str(exc)
+    for secret in (settings.sonarr_api_key, settings.plex_token, settings.app_token):
+        if secret:
+            text = text.replace(secret, "******")
+    return text[:500]
+
+
+def probe_connections(settings: Settings) -> dict:
+    sonarr_result = {"ok": False, "detail": ""}
+    plex_result = {"ok": False, "detail": ""}
+    sonarr = None
+    plex = None
+    try:
+        sonarr = SonarrClient(settings.sonarr_base, settings.sonarr_api_key, 15)
+        sonarr_result = {"ok": True, "detail": "Sonarr " + sonarr.status_version()}
+    except Exception as exc:
+        sonarr_result = {"ok": False, "detail": _safe_detail(exc, settings)}
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+    try:
+        plex = PlexClient(settings.plex_base, settings.plex_token, 15, 15, 50, 50, 0)
+        plex_result = {"ok": True, "detail": "Plex " + plex.server_name()}
+    except Exception as exc:
+        plex_result = {"ok": False, "detail": _safe_detail(exc, settings)}
+    finally:
+        if plex is not None:
+            plex.close()
+    return {"sonarr": sonarr_result, "plex": plex_result}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    runtime = RuntimeSettings()
+    configure_logging(runtime.log_level)
+    settings = load_settings()
+    holder.settings = settings
+    holder.state = State(settings.data_dir / "season-keeper.sqlite")
+    if settings.configured:
+        mode = "preview only" if settings.dry_run else "live"
+        logger.info(
+            "Season Keeper is %s. Tag=%s window=%s days interval=%s minutes",
+            mode,
+            settings.sonarr_tag,
+            settings.watch_window_days,
+            settings.watch_interval_minutes,
+        )
+    else:
+        logger.info("No Sonarr or Plex settings saved yet. Open /admin to enter them. The schedule is off.")
+    scheduler = BackgroundScheduler(timezone="UTC")
+    holder.scheduler = scheduler
+    if settings.configured:
+        _arm_schedule(settings, first=True)
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+        holder.scheduler = None
+
+
+app = FastAPI(title="Season Keeper", lifespan=lifespan)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    return HTMLResponse(PAGE, headers=NO_STORE)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin() -> HTMLResponse:
+    return HTMLResponse(ADMIN_PAGE, headers=NO_STORE)
+
+
+def _status_body() -> dict:
+    settings = _require_ready()
+    assert holder.state is not None
+    next_run = None
+    if holder.scheduler is not None and settings.configured:
+        job = holder.scheduler.get_job("cycle")
+        if job is not None and job.next_run_time is not None:
+            next_run = job.next_run_time.isoformat()
+    return {
+        "configured": settings.configured,
+        "dry_run": settings.dry_run,
+        "watch_window_days": settings.watch_window_days,
+        "watch_interval_minutes": settings.watch_interval_minutes,
+        "keep_seasons": sorted(settings.keep_season_numbers),
+        "tag": settings.sonarr_tag,
+        "running": holder.running,
+        "next_run_at": next_run,
+        "report": holder.state.load_report(),
+    }
+
+
+@app.get("/api/status")
+def status() -> JSONResponse:
+    return JSONResponse(_status_body(), headers=NO_STORE)
+
+
+@app.get("/api/settings")
+def read_settings(request: Request) -> JSONResponse:
+    settings = _require_ready()
+    _require_token(request)
+    return JSONResponse(public_settings(settings), headers=NO_STORE)
+
+
+@app.post("/api/settings")
+def write_settings(body: SettingsWrite, request: Request) -> JSONResponse:
+    current = _require_ready()
+    _require_token(request)
+    updated = _accept_write(current, body)
+    was_configured = current.configured
+    try:
+        save_settings(updated)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not save settings") from exc
+    holder.settings = updated
+    _arm_schedule(updated, first=not was_configured)
+    logger.info(
+        "Saved settings. mode=%s tag=%s window=%s days interval=%s minutes",
+        "preview" if updated.dry_run else "live",
+        updated.sonarr_tag,
+        updated.watch_window_days,
+        updated.watch_interval_minutes,
+    )
+    return JSONResponse(public_settings(updated), headers=NO_STORE)
+
+
+@app.post("/api/settings/test")
+def test_settings(body: SettingsWrite, request: Request) -> dict:
+    current = _require_ready()
+    _require_token(request)
+    candidate = _accept_write(current, body)
+    return probe_connections(candidate)
+
+
+@app.post("/api/run")
+def run_now(request: Request) -> JSONResponse:
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    if not cycle():
+        raise HTTPException(status_code=409, detail="A run is already in progress")
+    return JSONResponse(_status_body(), headers=NO_STORE)
+
+
+@app.get("/api/series/{series_id}")
+def series_preview(series_id: int, request: Request) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    assert holder.state is not None
+    if not holder.lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A run is already in progress")
+    holder.running = True
+    sonarr = None
+    try:
+        sonarr = SonarrClient(
+            settings.sonarr_base, settings.sonarr_api_key, settings.http_timeout_seconds
+        )
+        return preview_series(settings, holder.state, sonarr, series_id)
+    except SeriesNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SonarrError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+        holder.running = False
+        holder.lock.release()
+
+
+def _manual(request: Request, series_id: int, body: ConfirmBody, action) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="Confirm the action in the page before it runs")
+    assert holder.state is not None
+    if not holder.lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A run is already in progress")
+    holder.running = True
+    sonarr = None
+    try:
+        sonarr = SonarrClient(
+            settings.sonarr_base, settings.sonarr_api_key, settings.http_timeout_seconds
+        )
+        result = action(settings, holder.state, sonarr, series_id)
+        if result.error:
+            raise HTTPException(status_code=409, detail=result.error)
+        return result.to_dict()
+    except SeriesNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SonarrError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+        holder.running = False
+        holder.lock.release()
+
+
+@app.post("/api/series/{series_id}/delete-later")
+def delete_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
+    return _manual(request, series_id, body, delete_later_seasons)
+
+
+@app.post("/api/series/{series_id}/download-later")
+def download_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
+    return _manual(request, series_id, body, download_later_seasons)
+
+
+def main() -> None:
+    runtime = RuntimeSettings()
+    configure_logging(runtime.log_level)
+    uvicorn.run(app, host="0.0.0.0", port=runtime.port, log_level=runtime.log_level.lower())
+
+
+if __name__ == "__main__":
+    main()

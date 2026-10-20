@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>season-keeper</Name>
+  <Repository>ghcr.io/keberling/season-keeper:latest</Repository>
+  <Registry>https://github.com/keberling/season-keeper/pkgs/container/season-keeper</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/keberling/season-keeper/issues</Support>
+  <Project>https://github.com/keberling/season-keeper</Project>
+  <Overview>Keeps Sonarr series tagged season-keeper down to season 1 unless Plex shows a play in the last 90 days. After the container starts, open the WebUI and use Admin to enter Sonarr and Plex. The schedule stays in preview until you choose Live on that page. Season 1 is always kept. From the library page you can delete later seasons of one show, then ask Sonarr to download them again. Set the restart policy to Unless Stopped. Use the Unraid server IP for Sonarr and Plex. Localhost inside this container is Season Keeper itself.</Overview>
+  <Category>MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/keberling/season-keeper/main/unraid/my-season-keeper.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI" Target="8787" Default="8787" Mode="tcp" Description="Library page and Admin page" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/season-keeper" Mode="rw" Description="Saved admin settings, state database, and optional overrides.json. The API key and Plex token are stored here after you save them on the Admin page." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/season-keeper</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User that owns appdata. 99 is Unraid's nobody user." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group that owns appdata. 100 is Unraid's users group." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Timezone for container logs" Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+</Container>

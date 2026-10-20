@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Season Keeper</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #121410;
+      --bg-raise: #1b1e19;
+      --bg-sunken: #10120e;
+      --line: #31362c;
+      --text: #f4f1e8;
+      --muted: #b7bbae;
+      --faint: #8d9284;
+      --amber: #f0b429;
+      --amber-ink: #2a210c;
+      --green: #b7d39a;
+      --green-bg: #243024;
+      --red: #ffb4a8;
+      --red-bg: #3a221c;
+      --blue: #c5e0ea;
+      --blue-bg: #1c2830;
+      --gray-bg: #2a2d27;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background:
+        radial-gradient(1200px 400px at 10% -10%, rgba(240, 180, 41, 0.08), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      font: 16px/1.45 "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
+    }
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    code { font-family: "Cascadia Mono", "Segoe UI Mono", ui-monospace, monospace; font-size: 0.86em; }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    header.top {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(14px);
+      background: rgba(18, 20, 16, 0.9);
+      border-bottom: 1px solid var(--line);
+    }
+    .top-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 16px 0; }
+    .brand { display: flex; flex-direction: column; gap: 2px; }
+    .brand h1 { margin: 0; font-size: 1.25rem; letter-spacing: -0.03em; }
+    .brand p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+    .mode {
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .mode.preview { background: var(--amber); color: var(--amber-ink); }
+    .mode.live { background: var(--red-bg); color: var(--red); }
+    button.primary, button.ghost, button.danger, button.good, a.ghost {
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 9px 12px;
+      background: var(--bg-raise);
+    }
+    button.primary { background: var(--text); color: #16180f; border-color: transparent; font-weight: 650; }
+    button.ghost, a.ghost { background: transparent; color: inherit; text-decoration: none; }
+    .banner a, .empty a { color: var(--amber); }
+    [hidden] { display: none !important; }
+    button.danger { background: var(--red-bg); color: var(--red); border-color: transparent; }
+    button.good { background: var(--green-bg); color: var(--green); border-color: transparent; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    main { padding: 22px 0 64px; display: grid; gap: 16px; }
+    .banner, .warn, .empty {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      background: var(--bg-raise);
+    }
+    .banner strong { font-weight: 650; }
+    .warn { border-color: #6a5420; background: #241e12; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .stat {
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 104px;
+    }
+    .stat span { display: block; color: var(--faint); font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .stat strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 1.7rem;
+      letter-spacing: -0.04em;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat em { display: block; margin-top: 4px; color: var(--muted); font-style: normal; font-size: 0.88rem; }
+    .stat.savings strong { color: var(--amber); }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .search {
+      flex: 1 1 220px;
+      background: var(--bg-sunken);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chips button {
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      padding: 7px 10px;
+    }
+    .chips button[aria-pressed="true"] { background: var(--text); color: #16180f; border-color: transparent; }
+    .shows { display: grid; gap: 12px; }
+    article.show {
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      border-radius: 16px;
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+    article.show.prune { border-left-color: var(--amber); }
+    article.show.restore { border-left-color: var(--green); }
+    article.show.hold { border-left-color: #7ea8ba; }
+    article.show.skip { border-left-color: #5c6156; }
+    article.show.error { border-left-color: #e15a43; }
+    .show-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .show-head h2 { margin: 0; font-size: 1.2rem; letter-spacing: -0.03em; }
+    .reason { margin: 6px 0 0; color: var(--muted); }
+    .badge {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge.prune { background: #3a2e14; color: var(--amber); }
+    .badge.restore { background: var(--green-bg); color: var(--green); }
+    .badge.hold { background: var(--blue-bg); color: var(--blue); }
+    .badge.skip { background: var(--gray-bg); color: var(--muted); }
+    .badge.error { background: var(--red-bg); color: var(--red); }
+    .metrics { display: grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 10px; }
+    .metric { background: var(--bg-sunken); border-radius: 12px; padding: 12px; }
+    .metric span { color: var(--faint); font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .metric strong { display: block; margin-top: 4px; font-size: 1.35rem; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+    .metric small { color: var(--muted); }
+    .metric.savings strong { color: var(--amber); font-size: 1.7rem; }
+    details.seasons { border-top: 1px solid var(--line); padding-top: 10px; }
+    details summary { cursor: pointer; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { color: var(--faint); font-size: 0.75rem; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+    .bar { height: 8px; background: #2c3128; border-radius: 99px; overflow: hidden; min-width: 72px; }
+    .bar i { display: block; height: 100%; background: var(--amber); }
+    .bar i.keep { background: var(--green); }
+    .bar i.download, .bar i.monitor { background: #7ea8ba; }
+    .bar i.leave, .bar i.unmonitor { background: #6d7264; }
+    .path { color: var(--faint); margin: 8px 0 0; word-break: break-all; }
+    .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .meta-line { color: var(--faint); font-size: 0.88rem; }
+    .modal[hidden] { display: none; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 9, 7, 0.72);
+      display: grid;
+      place-items: center;
+      z-index: 10;
+      padding: 18px;
+    }
+    .dialog {
+      width: min(640px, 100%);
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+      max-height: min(86vh, 760px);
+      overflow: auto;
+    }
+    .dialog h2 { margin: 0; letter-spacing: -0.03em; }
+    .dialog p { margin: 0; color: var(--muted); }
+    .check { display: flex; gap: 8px; align-items: flex-start; color: var(--text); }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .toast[hidden] { display: none; }
+    .toast {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      z-index: 12;
+      max-width: min(420px, calc(100% - 24px));
+      background: var(--text);
+      color: #16180f;
+      border-radius: 12px;
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+    }
+    .foot { color: var(--faint); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: end; }
+    .token { display: flex; gap: 8px; align-items: center; }
+    .token input { background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 180px; }
+    @media (max-width: 800px) {
+      .stats, .metrics { grid-template-columns: 1fr 1fr; }
+      .top-row { align-items: flex-start; flex-direction: column; }
+    }
+    @media (max-width: 560px) {
+      .stats, .metrics { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-row">
+      <div class="brand">
+        <h1>Season Keeper</h1>
+        <p id="subtitle">Season 1 stays. Later seasons go after 90 quiet days, and come back when season 1 is played.</p>
+      </div>
+      <div class="top-actions">
+        <span id="mode" class="mode preview">Preview</span>
+        <a class="ghost" href="/admin">Admin</a>
+        <button id="refresh" class="primary" type="button">Refresh preview</button>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section id="banner" class="banner"></section>
+    <section id="warnings"></section>
+    <section id="stats" class="stats"></section>
+    <div class="toolbar" id="tools">
+      <input id="search" class="search" type="search" placeholder="Search shows" aria-label="Search shows">
+      <div class="chips" id="chips"></div>
+    </div>
+    <p id="showing" class="meta-line"></p>
+    <section id="shows" class="shows"></section>
+    <footer class="foot">
+      <p id="schedule" class="meta-line"></p>
+      <label class="token">Token
+        <input id="token" type="password" autocomplete="off" placeholder="Only if you set one">
+      </label>
+    </footer>
+  </main>
+  <div id="modal" class="modal" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title"></h2>
+      <p id="modal-copy"></p>
+      <div id="modal-body"></div>
+      <label class="check" id="modal-check-row">
+        <input id="modal-check" type="checkbox">
+        <span id="modal-check-label"></span>
+      </label>
+      <div class="dialog-actions">
+        <button id="modal-cancel" class="ghost" type="button">Cancel</button>
+        <button id="modal-go" class="danger" type="button" disabled>Confirm</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script>
+    const state = { status: null, filter: "all", query: "", modal: null };
+    const filters = [
+      ["all", "All"],
+      ["prune", "Would delete"],
+      ["restore", "Would download"],
+      ["hold", "Watching"],
+      ["skip", "No change"],
+      ["error", "Problems"]
+    ];
+
+    const tokenInput = document.getElementById("token");
+    tokenInput.value = sessionStorage.getItem("sk-token") || "";
+    tokenInput.addEventListener("change", () => {
+      sessionStorage.setItem("sk-token", tokenInput.value.trim());
+    });
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function formatBytes(num) {
+      let value = Number(num) || 0;
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let index = 0;
+      while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+      }
+      if (index === 0) return Math.round(value) + " B";
+      return value.toFixed(value >= 10 ? 1 : 2) + " " + units[index];
+    }
+
+    function seasonName(number) {
+      return Number(number) === 0 ? "Specials" : "Season " + number;
+    }
+
+    function when(iso) {
+      if (!iso) return "No play on record";
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return "Unknown";
+      return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    }
+
+    function badge(row) {
+      if (row.error) return ["error", "Problem"];
+      if (row.applied && row.action === "prune") return ["prune", "Deleted"];
+      if (row.applied && row.action === "restore") return ["restore", "Sent to Sonarr"];
+      if (row.action === "prune") return ["prune", "Would delete"];
+      if (row.action === "restore") return ["restore", "Would download"];
+      if (row.action === "hold") return ["hold", "Watching"];
+      return ["skip", "No change"];
+    }
+
+    function report() {
+      return (state.status && state.status.report) || null;
+    }
+
+    function seriesRows() {
+      const current = report();
+      return current && Array.isArray(current.series) ? current.series : [];
+    }
+
+    function wouldFree(rows) {
+      return rows.reduce((sum, row) => {
+        if (row.action === "prune" && !row.applied && !row.error) return sum + (Number(row.bytes_to_free) || 0);
+        return sum;
+      }, 0);
+    }
+
+    async function api(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      if (options.body) headers.set("Content-Type", "application/json");
+      const token = tokenInput.value.trim() || sessionStorage.getItem("sk-token") || "";
+      if (token) headers.set("Authorization", "Bearer " + token);
+      const response = await fetch(path, { ...options, headers });
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try { body = JSON.parse(text); } catch { body = { detail: text }; }
+      }
+      if (response.status === 401) {
+        tokenInput.focus();
+        throw new Error("This server wants an access token. Put it in the token field and try again.");
+      }
+      if (!response.ok) {
+        const detail = body && body.detail;
+        const message = Array.isArray(detail)
+          ? detail.map((item) => item.msg || String(item)).join("; ")
+          : (detail || response.statusText);
+        throw new Error(message);
+      }
+      return body;
+    }
+
+    function toast(message) {
+      const node = document.getElementById("toast");
+      node.textContent = message;
+      node.hidden = false;
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => { node.hidden = true; }, 4500);
+    }
+
+    function renderChips() {
+      document.getElementById("chips").innerHTML = filters.map(([id, label]) => {
+        const pressed = state.filter === id ? "true" : "false";
+        return `<button type="button" data-filter="${id}" aria-pressed="${pressed}">${label}</button>`;
+      }).join("");
+    }
+
+    function render() {
+      const status = state.status;
+      const rows = seriesRows();
+      const current = report();
+      const needsSetup = Boolean(status && status.configured === false);
+      const preview = !status || status.dry_run;
+      const mode = document.getElementById("mode");
+      mode.textContent = needsSetup ? "Setup" : (preview ? "Preview" : "Live");
+      mode.className = "mode " + (needsSetup || preview ? "preview" : "live");
+      document.getElementById("refresh").textContent = needsSetup
+        ? "Open admin"
+        : (status && status.running ? "Reading libraries…" : (preview ? "Refresh preview" : "Run now"));
+
+      const days = status ? status.watch_window_days : 90;
+      const interval = status ? status.watch_interval_minutes : 15;
+      const tag = status ? status.tag : "season-keeper";
+      document.getElementById("subtitle").textContent = needsSetup
+        ? "Enter Sonarr and Plex on the Admin page. Season 1 stays once a show is tagged."
+        : `Season 1 stays. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`;
+
+      document.getElementById("banner").innerHTML = needsSetup
+        ? `<strong>Setup.</strong> Sonarr and Plex are not saved yet. Open <a href="/admin">Admin</a> and enter them there. The schedule does not run, and nothing is deleted, until you save.`
+        : (preview
+          ? `<strong>Preview mode.</strong> The schedule reads Sonarr and Plex and changes nothing. The buttons on a show are the only actions that delete files or ask Sonarr to download, and each one asks you to confirm that one show.`
+          : `<strong>Live mode.</strong> Every ${interval} minutes, a tagged show with no play in ${days} days loses every season except season ${esc((status.keep_seasons || [1]).join(", "))}. You can still test one show, or send its later seasons back to Sonarr.`);
+
+      const warnings = document.getElementById("warnings");
+      const notes = [];
+      if (current && current.error) notes.push(`<div class="warn">${esc(current.error)}</div>`);
+      if (current && current.history_complete === false) {
+        notes.push(`<div class="warn">Plex history did not cover the full ${days}-day window, so nothing is queued for deletion this run.</div>`);
+      }
+      if (current && current.ambiguous_plays && current.ambiguous_plays.length) {
+        const names = current.ambiguous_plays.slice(0, 5).map(esc).join(", ");
+        notes.push(`<div class="warn">Some recent Plex plays had no show id (${names}). Those shows were left alone.</div>`);
+      }
+      warnings.innerHTML = notes.join("");
+
+      const keep = (status && status.keep_seasons) || [1];
+      const keptLabel = keep.length === 1 && Number(keep[0]) === 1 ? "Season 1 on disk" : "Kept seasons";
+      const onDisk = (row) => !(row.applied && row.action === "prune");
+      const keptBytes = rows.reduce((sum, row) => sum + (Number(row.kept_bytes) || 0), 0);
+      const laterBytes = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_bytes) || 0) : sum, 0);
+      const laterEpisodes = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_episode_count) || 0) : sum, 0);
+      const laterFiles = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_file_count) || 0) : sum, 0);
+      const free = wouldFree(rows);
+      const pruneCount = rows.filter((row) => row.action === "prune" && !row.applied && !row.error).length;
+      document.getElementById("stats").innerHTML = `
+        <div class="stat"><span>Tagged shows</span><strong>${rows.length}</strong><em>tag: ${esc(tag)}</em></div>
+        <div class="stat"><span>${esc(keptLabel)}</span><strong>${formatBytes(keptBytes)}</strong><em>kept</em></div>
+        <div class="stat savings"><span>Later seasons</span><strong>${formatBytes(laterBytes)}</strong><em>${laterEpisodes} episodes · ${laterFiles} files</em></div>
+        <div class="stat"><span>${preview ? "Rules would free" : "Idle shows would free"}</span><strong>${formatBytes(free)}</strong><em>${pruneCount} show${pruneCount === 1 ? "" : "s"}</em></div>
+      `;
+
+      const query = state.query.trim().toLowerCase();
+      const visible = rows.filter((row) => {
+        if (state.filter === "error") return Boolean(row.error);
+        if (state.filter !== "all" && row.action !== state.filter) return false;
+        if (!query) return true;
+        return (row.title || "").toLowerCase().includes(query) || String(row.tvdb_id || "").includes(query);
+      }).sort((a, b) => (Number(b.later_bytes) || 0) - (Number(a.later_bytes) || 0));
+
+      document.getElementById("showing").textContent = rows.length
+        ? `Showing ${visible.length} of ${rows.length}. Biggest later seasons first. Press / to search.`
+        : "";
+
+      const host = document.getElementById("shows");
+      if (needsSetup) {
+        host.innerHTML = `<div class="empty"><strong>Add Sonarr and Plex.</strong> Open <a href="/admin">Admin</a> and save the connection details. The schedule stays off until then.</div>`;
+      } else if (!current) {
+        host.innerHTML = `<div class="empty"><strong>No preview yet.</strong> Refresh to read tagged series from Sonarr and watch history from Plex.</div>`;
+      } else if (!rows.length) {
+        host.innerHTML = `<div class="empty"><strong>No tagged series.</strong> In Sonarr, edit a show and add the <code>${esc(tag)}</code> tag. Season Keeper creates that tag if it is missing.</div>`;
+      } else if (!visible.length) {
+        host.innerHTML = `<div class="empty">Nothing matches this filter.</div>`;
+      } else {
+        host.innerHTML = visible.map(renderShow).join("");
+      }
+
+      const finished = current && current.finished_at ? when(current.finished_at) : "not yet";
+      const next = status && status.next_run_at ? when(status.next_run_at) : "unknown";
+      document.getElementById("schedule").textContent = needsSetup
+        ? "The schedule starts after you save Sonarr and Plex."
+        : `Last read ${finished}. Next scheduled read ${next}.`;
+      document.getElementById("stats").hidden = needsSetup;
+      document.getElementById("tools").hidden = needsSetup;
+      document.getElementById("showing").hidden = needsSetup;
+      renderChips();
+    }
+
+    function renderShow(row) {
+      const keep = (state.status && state.status.keep_seasons) || [1];
+      const keptLabel = keep.length === 1 && Number(keep[0]) === 1 ? "Season 1" : "Kept seasons";
+      const [kind, label] = badge(row);
+      const title = esc(row.title) + (row.year ? ` (${row.year})` : "");
+      const thirdLabel = row.action === "prune" ? (row.applied ? "Freed" : "Would free") : "Later seasons";
+      const thirdValue = row.action === "prune" ? formatBytes(row.bytes_to_free) : formatBytes(row.later_bytes);
+      const thirdNote = row.action === "hold"
+        ? "stays, show was watched"
+        : (row.action === "restore" ? "missing seasons would be searched" : `${row.later_episode_count || 0} episodes`);
+      const total = Math.max(Number(row.size_on_disk) || 0, 1);
+      const seasonRows = (row.seasons || []).map((season) => {
+        const width = Math.max(2, Math.round((Number(season.size_on_disk) || 0) / total * 100));
+        return `<tr>
+          <td>${esc(seasonName(season.season_number))}</td>
+          <td>${season.episode_count}</td>
+          <td>${season.file_count}</td>
+          <td>${formatBytes(season.size_on_disk)}</td>
+          <td>${season.monitored ? "Yes" : "No"}</td>
+          <td>${esc(season.disposition)}</td>
+          <td><div class="bar"><i class="${esc(season.disposition)}" style="width:${width}%"></i></div></td>
+        </tr>`;
+      }).join("");
+      const watched = row.last_viewed_at ? `Last play ${when(row.last_viewed_at)}.` : "No play in the Plex history that was read.";
+      const match = row.plex_matched ? "Plex match" : "No Plex match";
+      return `<article class="show ${kind}">
+        <div class="show-head">
+          <div>
+            <h2>${title}</h2>
+            <p class="reason">${esc(row.reason || "")}</p>
+          </div>
+          <span class="badge ${kind}">${label}</span>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span>${esc(keptLabel)}</span><strong>${row.kept_episode_count || 0} ep</strong><small>${row.kept_file_count || 0} files · ${formatBytes(row.kept_bytes)}</small></div>
+          <div class="metric"><span>Later seasons</span><strong>${row.later_episode_count || 0} ep</strong><small>${row.later_file_count || 0} files · ${formatBytes(row.later_bytes)}</small></div>
+          <div class="metric savings"><span>${esc(thirdLabel)}</span><strong>${thirdValue}</strong><small>${esc(thirdNote)}</small></div>
+        </div>
+        <p class="meta-line">${esc(match)} · ${esc(watched)}${row.tvdb_id ? ` · TVDB ${esc(row.tvdb_id)}` : ""}</p>
+        ${row.applied ? `<p class="meta-line">This card is the action that just ran. Refresh to read Sonarr again.</p>` : ""}
+        <details class="seasons">
+          <summary>Season by season</summary>
+          <table>
+            <thead><tr><th>Season</th><th>Episodes</th><th>Files</th><th>On disk</th><th>Monitored</th><th>Plan</th><th>Share</th></tr></thead>
+            <tbody>${seasonRows}</tbody>
+          </table>
+          ${row.path ? `<p class="path">${esc(row.path)}</p>` : ""}
+        </details>
+        <div class="row-actions">
+          <button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}">Test delete on this show</button>
+          <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}">Download later seasons</button>
+        </div>
+      </article>`;
+    }
+
+    function seasonTable(seasons) {
+      const body = (seasons || []).map((season) => `<tr>
+        <td>${esc(seasonName(season.season_number))}</td>
+        <td>${season.episode_count}</td>
+        <td>${season.file_count}</td>
+        <td>${formatBytes(season.size_on_disk)}</td>
+        <td>${esc(season.disposition)}</td>
+      </tr>`).join("");
+      return `<table><thead><tr><th>Season</th><th>Episodes</th><th>Files</th><th>On disk</th><th>Plan</th></tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function closeModal() {
+      document.getElementById("modal").hidden = true;
+      document.getElementById("modal-check").checked = false;
+      document.getElementById("modal-go").disabled = true;
+      state.modal = null;
+    }
+
+    async function openModal(action, seriesId) {
+      const button = document.querySelector(`[data-act="${action}"][data-id="${seriesId}"]`);
+      if (button) button.disabled = true;
+      try {
+        const preview = await api(`/api/series/${seriesId}`);
+        const plan = action === "delete" ? preview.delete : preview.download;
+        state.modal = { action, seriesId, plan };
+        const title = plan.title + (plan.year ? ` (${plan.year})` : "");
+        document.getElementById("modal-title").textContent = title;
+        const go = document.getElementById("modal-go");
+        const checkRow = document.getElementById("modal-check-row");
+        document.getElementById("modal-body").innerHTML = seasonTable(plan.seasons);
+        const nothing = plan.action === "skip" || plan.action === "hold";
+        if (action === "delete") {
+          document.getElementById("modal-copy").textContent = nothing
+            ? plan.reason
+            : `This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} in the later seasons and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again.`;
+          document.getElementById("modal-check-label").textContent = "Delete these episode files now. Season 1 stays.";
+          go.textContent = `Delete ${plan.files_targeted} files`;
+          go.className = "danger";
+        } else {
+          const seasons = (plan.search_seasons || []).map(seasonName).join(", ");
+          document.getElementById("modal-copy").textContent = nothing
+            ? plan.reason
+            : `Sonarr will monitor the later seasons${seasons ? " and search " + seasons : ""}. Your indexers and download client will grab the missing episodes again.`;
+          document.getElementById("modal-check-label").textContent = "Tell Sonarr to monitor these seasons and search for the missing episodes.";
+          go.textContent = "Download later seasons";
+          go.className = "good";
+        }
+        checkRow.hidden = nothing;
+        go.hidden = nothing;
+        go.disabled = true;
+        document.getElementById("modal-check").checked = false;
+        document.getElementById("modal").hidden = false;
+        (nothing ? document.getElementById("modal-cancel") : document.getElementById("modal-check")).focus();
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function confirmModal() {
+      const modal = state.modal;
+      if (!modal || !document.getElementById("modal-check").checked) return;
+      const go = document.getElementById("modal-go");
+      go.disabled = true;
+      const path = modal.action === "delete"
+        ? `/api/series/${modal.seriesId}/delete-later`
+        : `/api/series/${modal.seriesId}/download-later`;
+      try {
+        const result = await api(path, { method: "POST", body: JSON.stringify({ confirm: true }) });
+        closeModal();
+        await load();
+        toast(result.reason || "Done.");
+      } catch (error) {
+        toast(error.message);
+        go.disabled = false;
+        try { await load(); } catch { /* The status page will refresh on the next visit. */ }
+      }
+    }
+
+    async function load() {
+      state.status = await api("/api/status");
+      render();
+    }
+
+    async function refresh() {
+      if (state.status && state.status.configured === false) {
+        window.location.href = "/admin";
+        return;
+      }
+      const button = document.getElementById("refresh");
+      button.disabled = true;
+      button.textContent = "Reading libraries…";
+      try {
+        state.status = await api("/api/run", { method: "POST", body: "{}" });
+        render();
+        const current = report();
+        if (current && current.error) toast(current.error);
+        else toast("Preview updated.");
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        button.disabled = false;
+        render();
+      }
+    }
+
+    document.getElementById("refresh").addEventListener("click", refresh);
+    document.getElementById("search").addEventListener("input", (event) => {
+      state.query = event.target.value;
+      render();
+    });
+    document.getElementById("chips").addEventListener("click", (event) => {
+      const filter = event.target.getAttribute("data-filter");
+      if (!filter) return;
+      state.filter = filter;
+      render();
+    });
+    document.getElementById("shows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-act]");
+      if (!button) return;
+      openModal(button.getAttribute("data-act"), button.getAttribute("data-id"));
+    });
+    document.getElementById("modal-cancel").addEventListener("click", closeModal);
+    document.getElementById("modal-check").addEventListener("change", (event) => {
+      document.getElementById("modal-go").disabled = !event.target.checked;
+    });
+    document.getElementById("modal-go").addEventListener("click", confirmModal);
+    document.getElementById("modal").addEventListener("click", (event) => {
+      if (event.target.id === "modal") closeModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
+        event.preventDefault();
+        document.getElementById("search").focus();
+      }
+      if (event.key === "Escape") closeModal();
+    });
+
+    renderChips();
+    load().catch((error) => {
+      document.getElementById("banner").textContent = error.message;
+    });
+  </script>
+</body>
+</html>

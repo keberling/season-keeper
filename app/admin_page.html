@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Season Keeper Admin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #121410;
+      --bg-raise: #1b1e19;
+      --bg-sunken: #10120e;
+      --line: #31362c;
+      --text: #f4f1e8;
+      --muted: #b7bbae;
+      --faint: #8d9284;
+      --amber: #f0b429;
+      --amber-ink: #2a210c;
+      --green: #b7d39a;
+      --green-bg: #243024;
+      --red: #ffb4a8;
+      --red-bg: #3a221c;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background:
+        radial-gradient(1200px 400px at 10% -10%, rgba(240, 180, 41, 0.08), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      font: 16px/1.45 "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    a { color: var(--amber); }
+    [hidden] { display: none !important; }
+    ::placeholder { color: var(--faint); }
+    .wrap { width: min(880px, calc(100% - 32px)); margin: 0 auto; }
+    header.top {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(14px);
+      background: rgba(18, 20, 16, 0.9);
+      border-bottom: 1px solid var(--line);
+    }
+    .top-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 16px 0; }
+    .brand h1 { margin: 0; font-size: 1.25rem; letter-spacing: -0.03em; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 0.92rem; }
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+    a.ghost, button.primary, button.ghost {
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 9px 12px;
+      background: transparent;
+      text-decoration: none;
+      color: inherit;
+    }
+    button.primary { background: var(--text); color: #16180f; border-color: transparent; font-weight: 650; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: 2px;
+    }
+    main { padding: 22px 0 64px; display: grid; gap: 16px; }
+    form { display: grid; gap: 16px; }
+    .banner, .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--bg-raise);
+      padding: 16px 18px;
+    }
+    .banner p, .card p { margin: 0; color: var(--muted); }
+    .card { display: grid; gap: 14px; }
+    .card h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.02em; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    label.field { display: grid; gap: 6px; }
+    label.field > span, .choice strong { font-size: 0.92rem; }
+    .hint { margin: 0; color: var(--faint); font-size: 0.85rem; }
+    .hint.ok { color: var(--green); }
+    .hint.bad { color: var(--red); }
+    input[type="text"], input[type="password"], input[type="number"], select {
+      width: 100%;
+      background: var(--bg-sunken);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .choices { display: flex; gap: 10px; flex-wrap: wrap; }
+    .choice {
+      flex: 1 1 240px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: var(--bg-sunken);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .choice input { margin-top: 4px; }
+    .choice p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+    .warn {
+      border: 1px solid #6a5420;
+      background: #241e12;
+      border-radius: 12px;
+      padding: 12px;
+      color: var(--text);
+      display: grid;
+      gap: 10px;
+    }
+    .warn p { margin: 0; }
+    .check { display: flex; gap: 8px; align-items: flex-start; }
+    .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center; }
+    #result { margin-right: auto; flex: 1 1 220px; }
+    .token { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+    .token input { width: 180px; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+    @media (max-width: 700px) {
+      .pair { grid-template-columns: 1fr; }
+      .top-row { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-row">
+      <div class="brand">
+        <h1>Admin</h1>
+        <p>Sonarr, Plex, and the rules. Saved in the data folder and applied when you press Save.</p>
+      </div>
+      <div class="top-actions">
+        <label class="token">Token
+          <input id="auth-token" type="password" autocomplete="off" placeholder="Only if you set one">
+        </label>
+        <a class="ghost" href="/">Library</a>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="banner">
+      <p id="intro">The schedule stays in preview until you choose Live and save. Season 1 is always kept. The web port, data folder, and container user are set on the container. Restart after changing those.</p>
+    </section>
+    <form id="form">
+      <div class="card">
+        <h2>Connections</h2>
+        <p>Use the Unraid server IP. From inside this container, localhost is Season Keeper itself. Include a URL base if Sonarr uses one.</p>
+        <div class="pair">
+          <label class="field">
+            <span>Sonarr URL</span>
+            <input id="sonarr-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" required placeholder="http://192.168.1.10:8989">
+          </label>
+          <label class="field">
+            <span>Sonarr API key</span>
+            <input id="sonarr-key" type="password" autocomplete="off" spellcheck="false" placeholder="Settings, General, API Key">
+            <p id="sonarr-key-hint" class="hint"></p>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Plex URL</span>
+            <input id="plex-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" required placeholder="http://192.168.1.10:32400">
+          </label>
+          <label class="field">
+            <span>Plex token</span>
+            <input id="plex-token" type="password" autocomplete="off" spellcheck="false" placeholder="Server owner token">
+            <p id="plex-token-hint" class="hint">The server owner token includes every account in the watch history.</p>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Rules</h2>
+        <div class="choices">
+          <label class="choice">
+            <input type="radio" name="run-mode" value="preview" checked>
+            <span>
+              <strong>Preview</strong>
+              <p>The schedule reads Sonarr and Plex and changes nothing. One-show buttons still ask you to confirm.</p>
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="run-mode" value="live">
+            <span>
+              <strong>Live</strong>
+              <p>On the schedule, an idle tagged show loses later seasons. A season 1 play asks Sonarr to search.</p>
+            </span>
+          </label>
+        </div>
+        <div id="live-warn" class="warn" hidden>
+          <p>Live deletes later-season files for tagged shows with no play in the watch window, and asks Sonarr to download them again when season 1 is played. Season 1 stays.</p>
+          <label class="check" id="live-confirm-row">
+            <input id="live-confirm" type="checkbox">
+            <span>The schedule may delete later-season files</span>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Watch window (days)</span>
+            <input id="window" type="number" min="1" max="3650" value="90" required>
+            <p class="hint">A play inside this window keeps the later seasons.</p>
+          </label>
+          <label class="field">
+            <span>Seasons to keep</span>
+            <input id="keep" type="text" value="1" autocomplete="off" spellcheck="false" required>
+            <p id="keep-note" class="hint">Season 1 is always kept. Add 0 to keep specials.</p>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Sonarr tag</span>
+            <input id="tag" type="text" value="season-keeper" autocomplete="off" spellcheck="false" required>
+            <p class="hint">Only series with this tag are managed. Season Keeper creates the tag.</p>
+          </label>
+          <label class="field">
+            <span>Check every (minutes)</span>
+            <input id="interval" type="number" min="5" max="1440" value="15" required>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Search cooldown (hours)</span>
+            <input id="cooldown" type="number" min="1" max="168" value="6" required>
+            <p class="hint">Minimum time between scheduled searches of the same season.</p>
+          </label>
+          <label class="field">
+            <span>Monitor new items while active</span>
+            <select id="active">
+              <option value="all">all</option>
+              <option value="new">new</option>
+              <option value="none">none</option>
+              <option value="keep">keep</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Monitor new items while idle</span>
+          <select id="idle">
+            <option value="none">none</option>
+            <option value="all">all</option>
+            <option value="new">new</option>
+            <option value="keep">keep</option>
+          </select>
+          <p class="hint">keep leaves Sonarr's own setting alone.</p>
+        </label>
+      </div>
+      <div class="card">
+        <h2>Access token</h2>
+        <p>Optional. When set, the library page and this page ask for it before a change. Leave the field blank to keep the saved token.</p>
+        <label class="field">
+          <span>New access token</span>
+          <input id="app-token" type="password" autocomplete="off" spellcheck="false" placeholder="Leave blank to keep the current token">
+        </label>
+        <label class="check">
+          <input id="clear-token" type="checkbox">
+          <span>Remove the access token</span>
+        </label>
+      </div>
+      <div class="actions">
+        <p id="result" class="hint" role="status"></p>
+        <button id="test" class="ghost" type="button">Test connection</button>
+        <button id="save" class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </main>
+  <script>
+    const state = { loaded: null };
+    const authInput = document.getElementById("auth-token");
+    authInput.value = sessionStorage.getItem("sk-token") || "";
+    authInput.addEventListener("change", () => {
+      sessionStorage.setItem("sk-token", authInput.value.trim());
+    });
+
+    function report(message, ok) {
+      const node = document.getElementById("result");
+      node.textContent = message;
+      node.className = ok ? "hint ok" : "hint bad";
+    }
+
+    async function api(path, options) {
+      const headers = new Headers(options && options.headers || {});
+      if (options && options.body) headers.set("Content-Type", "application/json");
+      const token = authInput.value.trim() || sessionStorage.getItem("sk-token") || "";
+      if (token) headers.set("Authorization", "Bearer " + token);
+      const response = await fetch(path, Object.assign({}, options, { headers: headers }));
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try { body = JSON.parse(text); } catch (error) { body = { detail: text }; }
+      }
+      if (response.status === 401) {
+        authInput.focus();
+        throw new Error("This server wants an access token. Put it in the token field and try again.");
+      }
+      if (!response.ok) {
+        const detail = body && body.detail;
+        const message = Array.isArray(detail)
+          ? detail.map((item) => item.msg || String(item)).join("; ")
+          : (detail || response.statusText);
+        throw new Error(message);
+      }
+      return body;
+    }
+
+    function selectedMode() {
+      const picked = document.querySelector('input[name="run-mode"]:checked');
+      return picked ? picked.value : "preview";
+    }
+
+    function syncMode() {
+      const live = selectedMode() === "live";
+      const alreadyLive = state.loaded && state.loaded.configured && state.loaded.dry_run === false;
+      const warn = document.getElementById("live-warn");
+      const row = document.getElementById("live-confirm-row");
+      const box = document.getElementById("live-confirm");
+      warn.hidden = !live;
+      row.hidden = !live || alreadyLive;
+      if (row.hidden) box.checked = false;
+      document.getElementById("save").disabled = live && !alreadyLive && !box.checked;
+    }
+
+    function payload() {
+      return {
+        sonarr_url: document.getElementById("sonarr-url").value.trim(),
+        sonarr_api_key: document.getElementById("sonarr-key").value,
+        plex_url: document.getElementById("plex-url").value.trim(),
+        plex_token: document.getElementById("plex-token").value,
+        dry_run: selectedMode() !== "live",
+        watch_window_days: Number(document.getElementById("window").value),
+        keep_seasons: document.getElementById("keep").value.trim(),
+        sonarr_tag: document.getElementById("tag").value.trim(),
+        watch_interval_minutes: Number(document.getElementById("interval").value),
+        search_cooldown_hours: Number(document.getElementById("cooldown").value),
+        monitor_new_items_when_active: document.getElementById("active").value,
+        monitor_new_items_when_idle: document.getElementById("idle").value,
+        app_token: document.getElementById("app-token").value,
+        clear_app_token: document.getElementById("clear-token").checked
+      };
+    }
+
+    function fill(data) {
+      state.loaded = data;
+      document.getElementById("sonarr-url").value = data.sonarr_url || "";
+      document.getElementById("plex-url").value = data.plex_url || "";
+      document.getElementById("sonarr-key").value = "";
+      document.getElementById("plex-token").value = "";
+      document.getElementById("sonarr-key-hint").textContent = data.sonarr_api_key_set
+        ? ("A key is saved. " + (data.sonarr_api_key_hint || "Leave the field blank to keep it."))
+        : "Sonarr, Settings, General, API Key.";
+      const plexHint = document.getElementById("plex-token-hint");
+      plexHint.textContent = data.plex_token_set
+        ? ("A token is saved. " + (data.plex_token_hint || "Leave the field blank to keep it.") + " The server owner token includes every account.")
+        : "The server owner token includes every account in the watch history.";
+      const live = data.configured && data.dry_run === false;
+      const mode = document.querySelector('input[name="run-mode"][value="' + (live ? "live" : "preview") + '"]');
+      if (mode) mode.checked = true;
+      document.getElementById("window").value = data.watch_window_days;
+      document.getElementById("keep").value = data.keep_seasons || "1";
+      const kept = (data.keep_seasons_effective || [1]).join(", ");
+      document.getElementById("keep-note").textContent = "Season 1 is always kept. Effective seasons: " + kept + ".";
+      document.getElementById("tag").value = data.sonarr_tag || "season-keeper";
+      document.getElementById("interval").value = data.watch_interval_minutes;
+      document.getElementById("cooldown").value = data.search_cooldown_hours;
+      document.getElementById("active").value = data.monitor_new_items_when_active || "all";
+      document.getElementById("idle").value = data.monitor_new_items_when_idle || "none";
+      document.getElementById("app-token").value = "";
+      document.getElementById("app-token").disabled = false;
+      const clear = document.getElementById("clear-token");
+      clear.checked = false;
+      clear.disabled = !data.app_token_set;
+      syncMode();
+    }
+
+    function rememberToken(body) {
+      if (body.clear_app_token) {
+        sessionStorage.removeItem("sk-token");
+        authInput.value = "";
+        return;
+      }
+      const typed = (body.app_token || "").trim();
+      if (typed) {
+        sessionStorage.setItem("sk-token", typed);
+        authInput.value = typed;
+      }
+    }
+
+    async function load() {
+      const data = await api("/api/settings");
+      fill(data);
+    }
+
+    async function save() {
+      const button = document.getElementById("save");
+      const body = payload();
+      button.disabled = true;
+      try {
+        const data = await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
+        rememberToken(body);
+        fill(data);
+        report(data.dry_run ? "Saved. The schedule stays in preview." : "Saved. The schedule is live.", true);
+      } catch (error) {
+        report(error.message, false);
+        syncMode();
+      }
+    }
+
+    async function testConnection() {
+      const button = document.getElementById("test");
+      button.disabled = true;
+      report("Testing Sonarr and Plex…", true);
+      try {
+        const result = await api("/api/settings/test", { method: "POST", body: JSON.stringify(payload()) });
+        const sonarr = result.sonarr || {};
+        const plex = result.plex || {};
+        const ok = Boolean(sonarr.ok && plex.ok);
+        report(
+          "Sonarr: " + (sonarr.ok ? "OK. " : "Failed. ") + (sonarr.detail || "")
+            + "  Plex: " + (plex.ok ? "OK. " : "Failed. ") + (plex.detail || ""),
+          ok
+        );
+      } catch (error) {
+        report(error.message, false);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      save();
+    });
+    document.getElementById("test").addEventListener("click", testConnection);
+    document.getElementById("live-confirm").addEventListener("change", syncMode);
+    document.querySelectorAll('input[name="run-mode"]').forEach((input) => {
+      input.addEventListener("change", syncMode);
+    });
+    document.getElementById("clear-token").addEventListener("change", () => {
+      const clear = document.getElementById("clear-token").checked;
+      const field = document.getElementById("app-token");
+      field.disabled = clear;
+      if (clear) field.value = "";
+    });
+    syncMode();
+    load().catch((error) => {
+      report(error.message, false);
+    });
+  </script>
+</body>
+</html>
