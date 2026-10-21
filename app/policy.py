@@ -12,6 +12,9 @@ Rules:
   deletes every season that is not kept.
 - A season whose files were added inside the new-season grace period is
   held. It is not unmonitored or deleted until that period ends.
+- A show added to a Plex watchlist inside the window is held, so a new
+  watchlist entry is not pruned on the same day. A season 1 play still
+  restores. The watchlist does not search later seasons by itself.
 - A series that is not matched to Plex is left alone.
 - A history scan that stops before the window is covered leaves every series
   alone. Plays with no show id do not. A title match can only hold a show.
@@ -171,6 +174,8 @@ def decide(
         return _restore(series, watch, now, settings, keep)
     if show_active:
         return _hold(watch, now)
+    if is_recent(watch.watchlisted_at, now, window):
+        return _watchlist_hold(watch, now)
     if not watch.history_reliable:
         return _quiet(
             "skip",
@@ -201,6 +206,16 @@ def _latest_play_has_unknown_season(watch: ShowWatch) -> bool:
     if watch.last_viewed_at is None:
         return True
     return watch.unknown_season_at >= watch.last_viewed_at
+
+
+def _watchlist_hold(watch: ShowWatch, now: datetime) -> Decision:
+    who = (watch.watchlisted_by or "Someone").strip() or "Someone"
+    when = ago(watch.watchlisted_at, now) if watch.watchlisted_at is not None else "recently"
+    return _quiet(
+        "hold",
+        f"{who} added this to a Plex watchlist {when}. "
+        "The quiet-day clock restarted, so nothing was deleted.",
+    )
 
 
 def _hold(watch: ShowWatch, now: datetime) -> Decision:

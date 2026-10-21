@@ -20,10 +20,13 @@ from app.config import (
     Settings,
     SettingsWrite,
     apply_update,
+    clean_base_url,
     load_settings,
     public_settings,
     save_settings,
 )
+from app.intake import run_watchlist_intake
+from app.radarr import RadarrClient, RadarrError
 from app.human import dismissed_line
 from app.plex import PlexClient
 from app.progress import Progress
@@ -66,6 +69,18 @@ class ConfirmBody(BaseModel):
 
 class IgnoreBody(BaseModel):
     ignore: bool = True
+
+
+class RadarrTestBody(BaseModel):
+    radarr_url: str = ""
+    radarr_api_key: str = ""
+
+    @field_validator("radarr_url", "radarr_api_key", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 class LiveScopeBody(BaseModel):
@@ -118,31 +133,57 @@ def _validation_message(exc: ValidationError) -> str:
     return "; ".join(parts) or "Invalid settings"
 
 
+def _schedule_interval(
+    scheduler: BackgroundScheduler,
+    *,
+    job_id: str,
+    func,
+    minutes: int,
+    first: bool,
+    startup_delay: int,
+) -> None:
+    if scheduler.get_job(job_id):
+        scheduler.reschedule_job(job_id, trigger="interval", minutes=minutes)
+        return
+    delay = startup_delay if first else minutes * 60
+    first_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
+    scheduler.add_job(
+        func,
+        "interval",
+        minutes=minutes,
+        next_run_time=first_run,
+        id=job_id,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+
+
 def _arm_schedule(settings: Settings, *, first: bool) -> None:
     scheduler = holder.scheduler
     if scheduler is None or not settings.configured:
         return
-    if scheduler.get_job("cycle"):
-        scheduler.reschedule_job(
-            "cycle",
-            trigger="interval",
-            minutes=settings.watch_interval_minutes,
-        )
-        return
-    if first and settings.run_on_startup:
-        delay = settings.startup_delay_seconds
-    else:
-        delay = settings.watch_interval_minutes * 60
-    first_run = datetime.now(timezone.utc) + timedelta(seconds=delay)
-    scheduler.add_job(
-        cycle,
-        "interval",
+    cycle_delay = (
+        settings.startup_delay_seconds
+        if settings.run_on_startup
+        else settings.watch_interval_minutes * 60
+    )
+    _schedule_interval(
+        scheduler,
+        job_id="cycle",
+        func=cycle,
         minutes=settings.watch_interval_minutes,
-        next_run_time=first_run,
-        id="cycle",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
+        first=first,
+        startup_delay=cycle_delay,
+    )
+    # The library cycle also reads the watchlist. This shorter job covers the gap.
+    _schedule_interval(
+        scheduler,
+        job_id="watchlist",
+        func=watchlist_poll,
+        minutes=settings.watchlist_interval_minutes,
+        first=first,
+        startup_delay=settings.startup_delay_seconds + 60,
     )
 
 
@@ -163,6 +204,11 @@ def cycle() -> bool:
     plex = None
     try:
         sonarr, plex = _clients(settings)
+        holder.progress.update("Reading Plex watchlists.")
+        try:
+            run_watchlist_intake(settings, state, sonarr=sonarr)
+        except Exception:
+            logger.exception("The watchlist check failed")
         run_cycle(settings, state, sonarr, plex, progress=holder.progress)
     except Exception:
         logger.exception("The cycle crashed")
@@ -173,6 +219,23 @@ def cycle() -> bool:
             plex.close()
         holder.progress.clear()
         holder.running = False
+        holder.lock.release()
+    return True
+
+
+def watchlist_poll() -> bool:
+    settings = holder.settings
+    state = holder.state
+    if settings is None or state is None or not settings.configured:
+        return False
+    if not holder.lock.acquire(blocking=False):
+        logger.info("Skipped the watchlist check because another run is still going.")
+        return False
+    try:
+        run_watchlist_intake(settings, state)
+    except Exception:
+        logger.exception("The watchlist check failed")
+    finally:
         holder.lock.release()
     return True
 
@@ -207,22 +270,49 @@ def _accept_write(current: Settings, body: SettingsWrite) -> Settings:
         raise HTTPException(status_code=400, detail=_validation_message(exc)) from exc
 
 
-def _safe_detail(exc: Exception, settings: Settings) -> str:
+def _safe_detail(exc: Exception, settings: Settings, extra: tuple[str, ...] = ()) -> str:
     text = str(exc)
-    for secret in (settings.sonarr_api_key, settings.plex_token, settings.app_token):
+    for secret in (
+        settings.sonarr_api_key,
+        settings.plex_token,
+        settings.app_token,
+        settings.radarr_api_key,
+        settings.plex_watchlist_rss_url,
+        settings.plex_friends_watchlist_rss_url,
+        *extra,
+    ):
         if secret:
             text = text.replace(secret, "******")
     return text[:500]
 
 
+def _library_options(client: SonarrClient | RadarrClient) -> dict:
+    folders = []
+    for row in client.root_folders():
+        path = str(row.get("path") or "").strip()
+        if path:
+            folders.append({"path": path, "free_space": row.get("freeSpace")})
+    profiles = []
+    for row in client.quality_profiles():
+        if row.get("id") is None:
+            continue
+        profiles.append({"id": int(row["id"]), "name": str(row.get("name") or row["id"])})
+    return {"root_folders": folders, "quality_profiles": profiles}
+
+
 def probe_connections(settings: Settings) -> dict:
     sonarr_result = {"ok": False, "detail": ""}
     plex_result = {"ok": False, "detail": ""}
+    sonarr_options: dict = {"root_folders": [], "quality_profiles": []}
     sonarr = None
     plex = None
     try:
         sonarr = SonarrClient(settings.sonarr_base, settings.sonarr_api_key, 15)
         sonarr_result = {"ok": True, "detail": "Sonarr " + sonarr.status_version()}
+        try:
+            sonarr_options = _library_options(sonarr)
+        except Exception:
+            sonarr_options = {"root_folders": [], "quality_profiles": []}
     except Exception as exc:
         sonarr_result = {"ok": False, "detail": _safe_detail(exc, settings)}
     finally:
@@ -236,7 +326,7 @@ def probe_connections(settings: Settings) -> dict:
     finally:
         if plex is not None:
             plex.close()
-    return {"sonarr": sonarr_result, "plex": plex_result}
+    return {"sonarr": sonarr_result, "plex": plex_result, "sonarr_options": sonarr_options}
 
 
 @asynccontextmanager
@@ -348,6 +438,7 @@ def savings() -> JSONResponse:
             "protected_seasons": protected,
             "restored_seasons": totals["restored_seasons"],
             "searches": totals["searches"],
+            "watchlist_adds": totals["watchlist_adds"],
             "series_count": len(series),
             "scanned_at": None if report is None else report.get("finished_at"),
             "events": events,
@@ -363,7 +454,7 @@ def savings() -> JSONResponse:
 def activity(kind: str | None = None, q: str | None = None) -> JSONResponse:
     _require_ready()
     assert holder.state is not None
-    allowed = {"deleted", "restored", "approval", "approved", "dismissed"}
+    allowed = {"deleted", "restored", "approval", "approved", "dismissed", "watchlist"}
     selected = kind if kind in allowed else None
     return JSONResponse(
         {"events": holder.state.list_activity(kind=selected, query=q)},
@@ -437,6 +528,63 @@ def write_settings(body: SettingsWrite, request: Request) -> JSONResponse:
         updated.watch_interval_minutes,
     )
     return JSONResponse(public_settings(updated), headers=NO_STORE)
+
+
+@app.get("/api/sonarr/options")
+def sonarr_options(request: Request) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    sonarr = SonarrClient(settings.sonarr_base, settings.sonarr_api_key, 15)
+    try:
+        return _library_options(sonarr)
+    except SonarrError as exc:
+        raise HTTPException(status_code=502, detail=_safe_detail(exc, settings)) from exc
+    finally:
+        sonarr.close()
+
+
+@app.get("/api/radarr/options")
+def radarr_options(request: Request) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    if not settings.radarr_configured:
+        raise HTTPException(status_code=400, detail="Save the Radarr URL and API key first")
+    radarr = RadarrClient(settings.radarr_base, settings.radarr_api_key, 15)
+    try:
+        return _library_options(radarr)
+    except RadarrError as exc:
+        raise HTTPException(status_code=502, detail=_safe_detail(exc, settings)) from exc
+    finally:
+        radarr.close()
+
+
+@app.post("/api/radarr/test")
+def test_radarr(body: RadarrTestBody, request: Request) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    url_text = body.radarr_url or ("" if settings.radarr_url is None else str(settings.radarr_url))
+    key = body.radarr_api_key or settings.radarr_api_key
+    if not url_text.strip() or not key.strip():
+        raise HTTPException(status_code=400, detail="Enter the Radarr URL and API key")
+    try:
+        url = clean_base_url(url_text, "Radarr")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    radarr = RadarrClient(url, key.strip(), 15)
+    try:
+        version = radarr.status_version()
+        options = _library_options(radarr)
+        return {"ok": True, "detail": "Radarr " + version, **options}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": _safe_detail(exc, settings, extra=(key.strip(),)),
+            "root_folders": [],
+            "quality_profiles": [],
+        }
+    finally:
+        radarr.close()
 
 
 @app.post("/api/settings/test")

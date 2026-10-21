@@ -129,7 +129,7 @@ def test_a_restore_says_someone_watched(tmp_path, caplog):
     message = "Restored season 2 of The Office (2020) because someone watched."
     assert message in caplog.text
     assert state.list_activity()[0]["kind"] == "restored"
-    assert state.activity_totals() == {"restored_seasons": 1, "searches": 1}
+    assert state.activity_totals() == {"restored_seasons": 1, "searches": 1, "watchlist_adds": 0}
 
 
 def test_preview_writes_a_cycle_and_does_not_pretend_it_deleted(tmp_path, caplog):

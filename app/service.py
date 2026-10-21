@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.engine import apply_decision
+from app.intake import apply_watchlist_marks
 from app.models import RunReport, SeriesResult
 from app.plex import PlexClient, build_watch_index
 from app.policy import plan_manual_prune, plan_manual_restore
@@ -123,6 +124,7 @@ def _run_cycle(
         overrides=overrides,
         now=now,
     )
+    apply_watchlist_marks(index, state.watchlist_marks())
     from app.engine import execute
 
     report = execute(

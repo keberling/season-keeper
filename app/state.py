@@ -52,6 +52,26 @@ class State:
                 bytes INTEGER NOT NULL DEFAULT 0,
                 seasons INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS watchlist_seen (
+                item_key TEXT PRIMARY KEY,
+                media TEXT NOT NULL,
+                title TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                plex_guid TEXT,
+                imdb_id TEXT,
+                tvdb_id INTEGER,
+                tmdb_id INTEGER,
+                first_seen_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                sonarr_id INTEGER,
+                radarr_id INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS watchlist_marks (
+                tvdb_id INTEGER PRIMARY KEY,
+                watchlisted_at TEXT NOT NULL,
+                watchlisted_by TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS cycles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 finished_at TEXT NOT NULL,
@@ -208,12 +228,18 @@ class State:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT COALESCE(SUM(CASE WHEN kind = 'restored' THEN seasons ELSE 0 END), 0)
+                SELECT
+                    COALESCE(SUM(CASE WHEN kind = 'restored' THEN seasons ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN kind = 'watchlist' AND seasons > 0 THEN 1 ELSE 0 END), 0)
                 FROM activity
                 """
             ).fetchone()
         restored = int(row[0])
-        return {"restored_seasons": restored, "searches": restored}
+        return {
+            "restored_seasons": restored,
+            "searches": restored,
+            "watchlist_adds": int(row[1]),
+        }
 
     def record_cycle(
         self,
@@ -314,6 +340,118 @@ class State:
             }
             for freed_at, sonarr_id, title, file_count, nbytes in rows
         ]
+
+    def get_watchlist_item(self, item_key: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT item_key, media, title, added_by, plex_guid, imdb_id, tvdb_id, tmdb_id,
+                       first_seen_at, action, detail, sonarr_id, radarr_id
+                FROM watchlist_seen
+                WHERE item_key = ?
+                """,
+                (item_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "item_key",
+            "media",
+            "title",
+            "added_by",
+            "plex_guid",
+            "imdb_id",
+            "tvdb_id",
+            "tmdb_id",
+            "first_seen_at",
+            "action",
+            "detail",
+            "sonarr_id",
+            "radarr_id",
+        )
+        return dict(zip(keys, row, strict=True))
+
+    def save_watchlist_item(
+        self,
+        *,
+        item_key: str,
+        media: str,
+        title: str,
+        added_by: str,
+        plex_guid: str | None,
+        imdb_id: str | None,
+        tvdb_id: int | None,
+        tmdb_id: int | None,
+        first_seen_at: str,
+        action: str,
+        detail: str,
+        sonarr_id: int | None = None,
+        radarr_id: int | None = None,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO watchlist_seen (
+                    item_key, media, title, added_by, plex_guid, imdb_id, tvdb_id, tmdb_id,
+                    first_seen_at, action, detail, sonarr_id, radarr_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(item_key) DO UPDATE SET
+                    media = excluded.media,
+                    title = excluded.title,
+                    added_by = excluded.added_by,
+                    plex_guid = excluded.plex_guid,
+                    imdb_id = excluded.imdb_id,
+                    tvdb_id = excluded.tvdb_id,
+                    tmdb_id = excluded.tmdb_id,
+                    action = excluded.action,
+                    detail = excluded.detail,
+                    sonarr_id = excluded.sonarr_id,
+                    radarr_id = excluded.radarr_id
+                """,
+                (
+                    item_key,
+                    media,
+                    title,
+                    added_by,
+                    plex_guid,
+                    imdb_id,
+                    tvdb_id,
+                    tmdb_id,
+                    first_seen_at,
+                    action,
+                    detail,
+                    sonarr_id,
+                    radarr_id,
+                ),
+            )
+            self._conn.commit()
+
+    def remember_watchlist_mark(self, tvdb_id: int, when: datetime, who: str) -> None:
+        """First observation wins. Later polls do not move the quiet-day clock."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO watchlist_marks (tvdb_id, watchlisted_at, watchlisted_by)
+                VALUES (?, ?, ?)
+                ON CONFLICT(tvdb_id) DO NOTHING
+                """,
+                (int(tvdb_id), when.isoformat(), who),
+            )
+            self._conn.commit()
+
+    def watchlist_marks(self) -> dict[int, tuple[datetime, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tvdb_id, watchlisted_at, watchlisted_by FROM watchlist_marks"
+            ).fetchall()
+        marks: dict[int, tuple[datetime, str]] = {}
+        for tvdb_id, raw_when, who in rows:
+            when = datetime.fromisoformat(raw_when)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            marks[int(tvdb_id)] = (when, str(who or "Someone"))
+        return marks
 
     def dismiss(self, sonarr_id: int, when: datetime) -> None:
         with self._lock:
