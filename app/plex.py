@@ -332,7 +332,7 @@ class PlexClient:
                 f'Plex library "{title}", {count_phrase(len(shows), "show")} so far.',
                 done=len(shows),
             )
-        logger.info("Indexed %s Plex shows across TV libraries", len(shows))
+        logger.debug("Indexed %s Plex shows across TV libraries", len(shows))
         return shows
 
     def recent_history(
@@ -467,7 +467,7 @@ class PlexClient:
             for item in items
             if item.get("type") == "episode" and not item.get("grandparentRatingKey")
         )
-        logger.info(
+        logger.debug(
             "Plex history: %s plays in the window, %s already had a show id, %s hydrated, %s still unresolved",
             len(items),
             already,

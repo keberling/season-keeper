@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
 
+from app.human import approval_line, cycle_summary, deleted_line, restored_line
 from app.inventory import build_inventory
 from app.models import (
     Decision,
@@ -120,6 +121,7 @@ def apply_decision(
     running_searches: set[tuple[int, int]],
     honor_cooldown: bool = True,
     announce_preview: bool = True,
+    confirmed: bool = False,
 ) -> SeriesResult:
     decision = without_specials(series, decision)
     keep = managed_keep(settings.keep_seasons)
@@ -202,13 +204,33 @@ def apply_decision(
                     nbytes=decision.bytes_to_free,
                     when=now,
                 )
-                logger.info(
-                    "Deleted %s episode file(s) for %s",
-                    len(decision.delete_file_ids),
+                message = deleted_line(
                     series.label,
+                    decision.delete_seasons,
+                    decision.bytes_to_free,
+                    approved=confirmed,
+                )
+                logger.info("%s", message)
+                state.record_activity(
+                    at=now,
+                    kind="approved" if confirmed else "deleted",
+                    sonarr_id=series.id,
+                    title=series.title,
+                    message=message,
+                    nbytes=decision.bytes_to_free,
+                    seasons=len(decision.delete_seasons),
                 )
             if searches_ran:
-                logger.info("Asked Sonarr to search seasons %s of %s", searches_ran, series.label)
+                message = restored_line(series.label, searches_ran, decision.reason)
+                logger.info("%s", message)
+                state.record_activity(
+                    at=now,
+                    kind="restored",
+                    sonarr_id=series.id,
+                    title=series.title,
+                    message=message,
+                    seasons=len(searches_ran),
+                )
             if waiting:
                 reason = decision.reason + " Waiting: " + "; ".join(waiting) + "."
         elif settings.dry_run:
@@ -255,6 +277,7 @@ def apply_decision(
         files_targeted=len(decision.delete_file_ids),
         applied=applied,
         pending_approval=needs_approval and error is None,
+        protected_seasons=list(decision.protected_seasons),
     )
 
 
@@ -273,6 +296,12 @@ def execute(
     results: list[SeriesResult] = []
     total = len(series_list)
     dismissed = state.dismissed_ids()
+    previous = state.load_report() or {}
+    already_pending = {
+        int(row.get("sonarr_id") or 0)
+        for row in (previous.get("series") or [])
+        if row.get("pending_approval")
+    }
     allowlist = settings.live_series_ids
     if total == 0:
         report(progress, "Checking shows, 0 of 0.", done=0, total=0)
@@ -311,21 +340,67 @@ def execute(
             )
         results.append(result)
     finished = datetime.now(timezone.utc)
-    counts = {}
+    for result in results:
+        if not result.pending_approval or result.sonarr_id in already_pending:
+            continue
+        name = f"{result.title} ({result.year})" if result.year else result.title
+        message = approval_line(name, result.delete_seasons, result.bytes_to_free)
+        logger.info("%s", message)
+        state.record_activity(
+            at=finished,
+            kind="approval",
+            sonarr_id=result.sonarr_id,
+            title=result.title,
+            message=message,
+            nbytes=result.bytes_to_free,
+            seasons=len(result.delete_seasons),
+        )
+    counts: dict[str, int] = {}
     pending = 0
+    pending_bytes = 0
+    protected = 0
+    searches = 0
+    restored_seasons = 0
+    freed_bytes = 0
     for result in results:
         counts[result.action] = counts.get(result.action, 0) + 1
+        protected += len(result.protected_seasons)
         if result.pending_approval:
             pending += 1
-    scope = "all" if not allowlist else str(len(allowlist))
-    logger.info(
-        "Cycle finished dry_run=%s approval=%s live_scope=%s series=%s pending=%s %s",
-        settings.dry_run,
-        settings.require_delete_approval,
-        scope,
-        len(results),
-        pending,
-        " ".join(f"{name}={count}" for name, count in sorted(counts.items())),
+            pending_bytes += result.bytes_to_free
+        if result.applied and result.action == "restore":
+            searches += len(result.searches_ran)
+            restored_seasons += len(result.searches_ran)
+        if result.applied and result.action == "prune" and result.files_targeted:
+            freed_bytes += result.bytes_to_free
+    summary = cycle_summary(
+        dry_run=settings.dry_run,
+        prune=counts.get("prune", 0),
+        hold=counts.get("hold", 0),
+        restore=counts.get("restore", 0),
+        skip=counts.get("skip", 0),
+        pending=pending,
+        protected=protected,
+        searches=searches,
+        restored_seasons=restored_seasons,
+        freed_bytes=freed_bytes,
+        pending_bytes=pending_bytes,
+    )
+    logger.info("%s", summary)
+    state.record_cycle(
+        finished_at=finished.isoformat(),
+        dry_run=settings.dry_run,
+        summary=summary,
+        prune=counts.get("prune", 0),
+        hold=counts.get("hold", 0),
+        restore=counts.get("restore", 0),
+        skip=counts.get("skip", 0),
+        pending=pending,
+        protected=protected,
+        searches=searches,
+        restored_seasons=restored_seasons,
+        freed_bytes=freed_bytes,
+        pending_bytes=pending_bytes,
     )
     return RunReport(
         started_at=started.isoformat(),

@@ -1,4 +1,4 @@
-"""SQLite memory for search cooldowns and the last report shown in the GUI."""
+"""SQLite memory for search cooldowns, the last report, and the activity log."""
 
 from __future__ import annotations
 
@@ -41,6 +41,32 @@ class State:
             CREATE TABLE IF NOT EXISTS dismissed (
                 sonarr_id INTEGER PRIMARY KEY,
                 dismissed_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                sonarr_id INTEGER,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                seasons INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finished_at TEXT NOT NULL,
+                dry_run INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                prune INTEGER NOT NULL,
+                hold INTEGER NOT NULL,
+                restore INTEGER NOT NULL,
+                skip INTEGER NOT NULL,
+                pending INTEGER NOT NULL,
+                protected INTEGER NOT NULL,
+                searches INTEGER NOT NULL,
+                restored_seasons INTEGER NOT NULL,
+                freed_bytes INTEGER NOT NULL,
+                pending_bytes INTEGER NOT NULL
             );
             """
         )
@@ -100,6 +126,173 @@ class State:
                 (when.isoformat(), sonarr_id, title, file_count, nbytes),
             )
             self._conn.commit()
+
+    def freed_total_bytes(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COALESCE(SUM(bytes), 0) FROM freed").fetchone()
+        return int(row[0])
+
+    def freed_bytes_since(self, when: datetime) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(bytes), 0) FROM freed WHERE freed_at >= ?",
+                (when.isoformat(),),
+            ).fetchone()
+        return int(row[0])
+
+    def record_activity(
+        self,
+        *,
+        at: datetime,
+        kind: str,
+        title: str,
+        message: str,
+        sonarr_id: int | None = None,
+        nbytes: int = 0,
+        seasons: int = 0,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO activity (at, kind, sonarr_id, title, message, bytes, seasons)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (at.isoformat(), kind, sonarr_id, title, message, nbytes, seasons),
+            )
+            self._conn.commit()
+
+    def list_activity(
+        self,
+        *,
+        kind: str | None = None,
+        query: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if query and query.strip():
+            clauses.append("(title LIKE ? OR message LIKE ?)")
+            needle = f"%{query.strip()}%"
+            params.extend((needle, needle))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, at, kind, sonarr_id, title, message, bytes, seasons
+                FROM activity
+                {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "at": row[1],
+                "kind": row[2],
+                "sonarr_id": row[3],
+                "title": row[4],
+                "message": row[5],
+                "bytes": row[6],
+                "seasons": row[7],
+            }
+            for row in rows
+        ]
+
+    def activity_totals(self) -> dict:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COALESCE(SUM(CASE WHEN kind = 'restored' THEN seasons ELSE 0 END), 0)
+                FROM activity
+                """
+            ).fetchone()
+        restored = int(row[0])
+        return {"restored_seasons": restored, "searches": restored}
+
+    def record_cycle(
+        self,
+        *,
+        finished_at: str,
+        dry_run: bool,
+        summary: str,
+        prune: int,
+        hold: int,
+        restore: int,
+        skip: int,
+        pending: int,
+        protected: int,
+        searches: int,
+        restored_seasons: int,
+        freed_bytes: int,
+        pending_bytes: int,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO cycles (
+                    finished_at, dry_run, summary, prune, hold, restore, skip,
+                    pending, protected, searches, restored_seasons, freed_bytes, pending_bytes
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    finished_at,
+                    1 if dry_run else 0,
+                    summary,
+                    prune,
+                    hold,
+                    restore,
+                    skip,
+                    pending,
+                    protected,
+                    searches,
+                    restored_seasons,
+                    freed_bytes,
+                    pending_bytes,
+                ),
+            )
+            self._conn.commit()
+
+    def list_cycles(self, limit: int = 40) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT finished_at, dry_run, summary, prune, hold, restore, skip,
+                       pending, protected, searches, restored_seasons, freed_bytes, pending_bytes
+                FROM cycles
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        keys = (
+            "finished_at",
+            "dry_run",
+            "summary",
+            "prune",
+            "hold",
+            "restore",
+            "skip",
+            "pending",
+            "protected",
+            "searches",
+            "restored_seasons",
+            "freed_bytes",
+            "pending_bytes",
+        )
+        return [
+            {
+                **dict(zip(keys, row, strict=True)),
+                "dry_run": bool(row[1]),
+            }
+            for row in rows
+        ]
 
     def freed_events(self) -> list[dict]:
         with self._lock:

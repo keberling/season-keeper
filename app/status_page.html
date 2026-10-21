@@ -70,6 +70,7 @@
     button.primary { background: var(--text); color: #16180f; border-color: transparent; font-weight: 650; }
     button.ghost, a.ghost { background: transparent; color: inherit; text-decoration: none; }
     .banner a, .empty a { color: var(--amber); }
+    .legend { color: var(--muted); font-size: 0.92rem; margin: 0 0 14px; }
     [hidden] { display: none !important; }
     button.danger { background: var(--red-bg); color: var(--red); border-color: transparent; }
     button.good { background: var(--green-bg); color: var(--green); border-color: transparent; }
@@ -270,6 +271,7 @@
   </header>
   <main class="wrap">
     <section id="banner" class="banner"></section>
+    <p class="legend">Would remove takes later seasons off disk and leaves season 1. Would restore searches the missing ones after someone watches season 1. Held means a recent play or a new season, so nothing is deleted. Left alone means nothing changes. Needs approval means the later seasons are queued until you say yes.</p>
     <section id="progress" class="banner progress" hidden>
       <p id="progress-text" class="progress-text"></p>
       <div id="progress-bar" class="progress-track" hidden><i id="progress-fill"></i></div>
@@ -312,11 +314,11 @@
     let pollGen = 0;
     const filters = [
       ["matched", "Matched"],
-      ["approval", "Needs approval"],
+      ["approval", "Needs your OK"],
       ["live", "Live scope"],
-      ["prune", "Would delete"],
-      ["restore", "Would download"],
-      ["hold", "Watching"],
+      ["prune", "Would remove"],
+      ["restore", "Would restore"],
+      ["hold", "Held"],
       ["ignore", "Ignored"],
       ["skip", "Left alone"],
       ["all", "All"],
@@ -351,11 +353,52 @@
       return Number(number) === 0 ? "Specials" : "Season " + number;
     }
 
+    function relative(date) {
+      const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+      const abs = Math.abs(minutes);
+      if (abs < 1) return "just now";
+      const suffix = minutes < 0 ? "from now" : "ago";
+      if (abs < 60) return abs === 1 ? "1 minute " + suffix : abs + " minutes " + suffix;
+      const hours = Math.round(abs / 60);
+      if (hours < 36) return hours === 1 ? "1 hour " + suffix : hours + " hours " + suffix;
+      const days = Math.round(hours / 24);
+      return days === 1 ? "1 day " + suffix : days + " days " + suffix;
+    }
+
     function when(iso) {
       if (!iso) return "No play on record";
       const date = new Date(iso);
       if (Number.isNaN(date.getTime())) return "Unknown";
-      return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      const full = date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      return full + " · " + relative(date);
+    }
+
+    function planWord(value) {
+      return {
+        held: "Protected",
+        keep: "Keep",
+        download: "Download",
+        delete: "Remove",
+        unmonitor: "Stop monitoring",
+        monitor: "Start monitoring",
+        leave: "Leave"
+      }[value] || value || "";
+    }
+
+    function actionMeaning(row) {
+      if (row.error) return "Sonarr or Plex failed while checking this show.";
+      if (row.pending_approval) return "Needs approval before the later seasons are deleted. Season 1 stays.";
+      if (row.dismissed) return "You dismissed this request. The files stay until you approve a delete.";
+      if (row.applied && row.action === "prune") return "Later seasons were removed from disk. Season 1 stayed.";
+      if (row.applied && row.action === "restore") return "Sonarr was asked to search for the missing later seasons.";
+      const meanings = {
+        prune: "Later seasons would come off disk. Season 1 stays.",
+        restore: "Someone watched season 1, so missing later seasons get searched.",
+        hold: "A recent play or a new season, so nothing is deleted.",
+        skip: "Nothing to change, or not enough watch history to decide.",
+        ignore: "The ignore tag is on, so the schedule skips this show."
+      };
+      return meanings[row.action] || "";
     }
 
     function liveIds() {
@@ -373,16 +416,16 @@
 
     function badge(row) {
       if (row.error) return ["error", "Problem"];
-      if (row.applied && row.action === "prune") return ["prune", "Deleted"];
-      if (row.applied && row.action === "restore") return ["restore", "Sent to Sonarr"];
-      if (row.pending_approval) return ["prune", "Needs approval"];
-      if (row.dismissed && row.action === "prune") return ["skip", "Dismissed"];
-      if (row.action === "prune") return ["prune", "Would delete"];
-      if (row.action === "restore") return ["restore", "Would download"];
+      if (row.applied && row.action === "prune") return ["prune", "Removed"];
+      if (row.applied && row.action === "restore") return ["restore", "Restoring"];
+      if (row.pending_approval) return ["prune", "Needs your OK"];
+      if (row.dismissed && row.action === "prune") return ["skip", "Kept"];
+      if (row.action === "prune") return ["prune", "Would remove"];
+      if (row.action === "restore") return ["restore", "Would restore"];
       if (row.action === "hold" && String(row.reason || "").indexOf("protected until") !== -1) {
-        return ["hold", "Held"];
+        return ["hold", "New season"];
       }
-      if (row.action === "hold") return ["hold", "Watching"];
+      if (row.action === "hold") return ["hold", "Held"];
       if (row.action === "ignore") return ["ignore", "Ignored"];
       return ["skip", "Left alone"];
     }
@@ -649,6 +692,7 @@
 
     function renderShow(row) {
       const [kind, label] = badge(row);
+      const meaning = actionMeaning(row);
       const title = esc(row.title) + (row.year ? ` (${row.year})` : "");
       const ignored = row.action === "ignore";
       const sizeKind = row.action === "prune" && !row.error ? "savings" : "";
@@ -670,13 +714,13 @@
         ? `<span class="badge restore">Live</span>`
         : (selected ? `<span class="badge hold">In scope</span>` : "");
       const deleteButton = row.pending_approval
-        ? `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Approve</button>
-           <button type="button" class="ghost" data-act="dismiss" data-id="${row.sonarr_id}">Dismiss</button>`
-        : `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Delete later</button>`;
+        ? `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" title="Delete the later seasons that are waiting. Season 1 stays.">Approve deletion</button>
+           <button type="button" class="ghost" data-act="dismiss" data-id="${row.sonarr_id}" title="Keep the files and hide this request.">Dismiss</button>`
+        : `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Queue season deletion" title="After you confirm, later seasons are removed from disk. Season 1 stays.">Queue season deletion</button>`;
       return `<article class="show ${kind}">
         <div class="show-head">
           <h2>${title}</h2>
-          <span class="badge ${kind}">${label}</span>
+          <span class="badge ${kind}" title="${esc(meaning)}">${label}</span>
           ${liveMark}
         </div>
         <p class="reason">${esc(row.reason || "")}</p>
@@ -685,7 +729,7 @@
         ${row.applied ? `<p class="meta-line">This card is the action that just ran. Refresh to read Sonarr again.</p>` : ""}
         <div class="row-actions">
           ${deleteButton}
-          <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}" aria-label="Download later seasons">Download</button>
+          <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}" aria-label="Download missing seasons" title="Asks Sonarr to search for later seasons that are not on disk.">Download missing seasons</button>
           <button type="button" class="ghost" data-act="scope" data-id="${row.sonarr_id}" title="${esc(scopeTitle)}">${scopeLabel}</button>
           <button type="button" class="ghost" data-act="${ignoreAct}" data-id="${row.sonarr_id}">${ignoreLabel}</button>
         </div>
@@ -698,7 +742,7 @@
         <td>${season.episode_count}</td>
         <td>${season.file_count}</td>
         <td>${formatBytes(season.size_on_disk)}</td>
-        <td>${esc(season.disposition)}</td>
+        <td>${esc(planWord(season.disposition))}</td>
       </tr>`).join("");
       return `<table><thead><tr><th>Season</th><th>Episodes</th><th>Files</th><th>On disk</th><th>Plan</th></tr></thead><tbody>${body}</tbody></table>`;
     }
@@ -726,7 +770,7 @@
         if (action === "delete") {
           document.getElementById("modal-copy").textContent = nothing
             ? plan.reason
-            : `This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} in the later seasons and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again. If those files are hardlinked to a download that is still seeding, Sonarr can link that same data back into the season folder, and the disk space stays used until that download is gone too.`;
+            : `Queue season deletion removes the later seasons after you confirm. This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again. If those files are hardlinked to a download that is still seeding, the disk space stays used until that download is gone too.`;
           document.getElementById("modal-check-label").textContent = "Delete these episode files now. Season 1 stays.";
           go.textContent = `Delete ${plan.files_targeted} files`;
           go.className = "danger";
@@ -736,7 +780,7 @@
             ? plan.reason
             : `Sonarr will monitor the later seasons${seasons ? " and search " + seasons : ""}. Your indexers and download client will grab the missing episodes again.`;
           document.getElementById("modal-check-label").textContent = "Tell Sonarr to monitor these seasons and search for the missing episodes.";
-          go.textContent = "Download later seasons";
+          go.textContent = "Download missing seasons";
           go.className = "good";
         }
         checkRow.hidden = nothing;

@@ -220,6 +220,7 @@ class SeriesResult:
     pending_approval: bool = False
     dismissed: bool = False
     in_live_scope: bool = False
+    protected_seasons: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -257,6 +258,7 @@ class SeriesResult:
             "pending_approval": self.pending_approval,
             "dismissed": self.dismissed,
             "in_live_scope": self.in_live_scope,
+            "protected_seasons": list(self.protected_seasons),
         }
 
 
@@ -293,6 +295,7 @@ def summarize_dicts(rows: list[dict]) -> dict:
     later_episodes = 0
     kept_episodes = 0
     later_files = 0
+    protected_seasons = 0
     for row in rows:
         if row.get("error"):
             counts["error"] += 1
@@ -307,6 +310,7 @@ def summarize_dicts(rows: list[dict]) -> dict:
         later_files += int(row.get("later_file_count") or 0)
         if row.get("action") == "prune" and not row.get("error"):
             bytes_to_free += int(row.get("bytes_to_free") or 0)
+        protected_seasons += len(row.get("protected_seasons") or [])
     return {
         "counts": counts,
         "later_bytes": later_bytes,
@@ -315,4 +319,5 @@ def summarize_dicts(rows: list[dict]) -> dict:
         "later_episode_count": later_episodes,
         "kept_episode_count": kept_episodes,
         "later_file_count": later_files,
+        "protected_season_count": protected_seasons,
     }

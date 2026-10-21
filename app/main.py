@@ -24,6 +24,7 @@ from app.config import (
     public_settings,
     save_settings,
 )
+from app.human import dismissed_line
 from app.plex import PlexClient
 from app.progress import Progress
 from app.service import (
@@ -150,10 +151,10 @@ def cycle() -> bool:
     if settings is None or state is None:
         return False
     if not settings.configured:
-        logger.info("Skipped a cycle because Sonarr and Plex are not saved on the admin page")
+        logger.info("Skipped this cycle because Sonarr and Plex are not saved on the admin page.")
         return False
     if not holder.lock.acquire(blocking=False):
-        logger.info("Skipped a cycle because another run is in progress")
+        logger.info("Skipped this cycle because another run is still going.")
         return False
     holder.running = True
     holder.progress.update("Checking Sonarr and Plex.")
@@ -161,11 +162,9 @@ def cycle() -> bool:
     plex = None
     try:
         sonarr, plex = _clients(settings)
-        report = run_cycle(settings, state, sonarr, plex, progress=holder.progress)
-        if report.error:
-            logger.error("Cycle error: %s", report.error)
+        run_cycle(settings, state, sonarr, plex, progress=holder.progress)
     except Exception:
-        logger.exception("Cycle crashed")
+        logger.exception("The cycle crashed")
     finally:
         if sonarr is not None:
             sonarr.close()
@@ -309,16 +308,59 @@ def savings() -> JSONResponse:
         if row.get("action") == "prune" and not row.get("applied")
     )
     events = holder.state.freed_events()
+    pending_bytes = sum(
+        int(row.get("bytes_to_free") or 0)
+        for row in series
+        if row.get("pending_approval")
+    )
+    protected = sum(len(row.get("protected_seasons") or []) for row in series)
+    totals = holder.state.activity_totals()
+    top = sorted(
+        (
+            {
+                "title": row.get("title") or "Show",
+                "sonarr_id": row.get("sonarr_id"),
+                "bytes": int(row.get("bytes_to_free") or row.get("later_bytes") or 0),
+                "action": row.get("action"),
+                "pending_approval": bool(row.get("pending_approval")),
+            }
+            for row in series
+            if row.get("action") != "ignore"
+            and int(row.get("bytes_to_free") or row.get("later_bytes") or 0) > 0
+        ),
+        key=lambda row: int(row["bytes"]),
+        reverse=True,
+    )[:8]
+    recent_since = datetime.now(timezone.utc) - timedelta(days=7)
     return JSONResponse(
         {
             "possible_bytes": possible,
             "ready_bytes": ready,
-            "freed_bytes": sum(int(event["bytes"]) for event in events),
+            "freed_bytes": holder.state.freed_total_bytes(),
+            "recent_freed_bytes": holder.state.freed_bytes_since(recent_since),
+            "pending_bytes": pending_bytes,
+            "protected_seasons": protected,
+            "restored_seasons": totals["restored_seasons"],
+            "searches": totals["searches"],
             "series_count": len(series),
             "scanned_at": None if report is None else report.get("finished_at"),
             "events": events,
+            "cycles": holder.state.list_cycles(),
+            "top_shows": top,
             "configured": settings.configured,
         },
+        headers=NO_STORE,
+    )
+
+
+@app.get("/api/activity")
+def activity(kind: str | None = None, q: str | None = None) -> JSONResponse:
+    _require_ready()
+    assert holder.state is not None
+    allowed = {"deleted", "restored", "approval", "approved", "dismissed"}
+    selected = kind if kind in allowed else None
+    return JSONResponse(
+        {"events": holder.state.list_activity(kind=selected, query=q)},
         headers=NO_STORE,
     )
 
@@ -372,11 +414,18 @@ def write_settings(body: SettingsWrite, request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail="Could not save settings") from exc
     holder.settings = updated
     _arm_schedule(updated, first=not was_configured)
+    mode = "preview" if updated.dry_run else "live"
+    approval = "Deletes wait for approval." if updated.require_delete_approval else "Deletes run on their own."
+    scope = (
+        "Live scope is every show."
+        if not updated.live_series_ids
+        else f"Live scope is {len(updated.live_series_ids)} shows."
+    )
     logger.info(
-        "Saved settings. mode=%s approval=%s live_scope=%s ignore_tag=%s window=%s days interval=%s minutes",
-        "preview" if updated.dry_run else "live",
-        "required" if updated.require_delete_approval else "off",
-        "all" if not updated.live_series_ids else len(updated.live_series_ids),
+        "Saved settings. Mode is %s. %s %s Ignore tag is %s. Window is %s days, every %s minutes.",
+        mode,
+        approval,
+        scope,
         updated.ignore_tag,
         updated.watch_window_days,
         updated.watch_interval_minutes,
@@ -493,13 +542,24 @@ def dismiss_one(series_id: int, request: Request) -> dict:
     _require_token(request)
     _require_configured(settings)
     assert holder.state is not None
-    holder.state.dismiss(series_id, datetime.now(timezone.utc))
+    moment = datetime.now(timezone.utc)
+    holder.state.dismiss(series_id, moment)
     report = holder.state.load_report() or {}
     row = None
     for item in report.get("series") or []:
         if int(item.get("sonarr_id") or 0) == series_id:
             row = dict(item)
             break
+    title = str(row.get("title") or f"Show {series_id}") if row else f"Show {series_id}"
+    message = dismissed_line(title)
+    logger.info("%s", message)
+    holder.state.record_activity(
+        at=moment,
+        kind="dismissed",
+        sonarr_id=series_id,
+        title=title,
+        message=message,
+    )
     if row is None:
         return {"sonarr_id": series_id, "dismissed": True, "pending_approval": False}
     row["dismissed"] = True
