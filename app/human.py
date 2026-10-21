@@ -100,6 +100,11 @@ def approval_line(title: str, seasons: list[int] | tuple[int, ...], nbytes: int)
     )
 
 
+def watchlist_line(who: str, title: str, what: str) -> str:
+    person = who.strip() or "Someone"
+    return f"{person} added {title} to a Plex watchlist. {what}"
+
+
 def dismissed_line(title: str) -> str:
     return f"Dismissed the deletion request for {title}. The files stay on disk."
 

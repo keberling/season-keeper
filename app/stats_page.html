@@ -74,6 +74,7 @@
       <article class="card"><span>Seasons restored</span><strong id="restored">—</strong><em>Later seasons Sonarr was asked to fetch</em></article>
       <article class="card"><span>Searches</span><strong id="searches">—</strong><em>Season searches sent to Sonarr</em></article>
       <article class="card"><span>New seasons protected</span><strong id="protected">—</strong><em>Too new to remove, from the last scan</em></article>
+      <article class="card"><span>Watchlist adds</span><strong id="watchlist">—</strong><em>Shows and movies taken from a Plex watchlist</em></article>
     </section>
     <p id="scanned" class="meta"></p>
     <h2>Each cycle</h2>
@@ -93,6 +94,7 @@
       <button type="button" data-kind="approval">Asked for approval</button>
       <button type="button" data-kind="dismissed">Dismissed</button>
       <button type="button" data-kind="restored">Restored</button>
+      <button type="button" data-kind="watchlist">Watchlist</button>
       <input id="activity-q" type="search" placeholder="Filter by show" aria-label="Filter activity">
     </div>
     <div id="activity" class="events"></div>
@@ -209,6 +211,7 @@
       document.getElementById("restored").textContent = String(body.restored_seasons || 0);
       document.getElementById("searches").textContent = String(body.searches || 0);
       document.getElementById("protected").textContent = String(body.protected_seasons || 0);
+      document.getElementById("watchlist").textContent = String(body.watchlist_adds || 0);
       document.getElementById("scanned").textContent = body.scanned_at
         ? `Last scan ${when(body.scanned_at)}. ${body.series_count} show${body.series_count === 1 ? "" : "s"} in the last scan.`
         : "No scan yet. Refresh the library preview to fill these totals.";

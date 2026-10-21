@@ -35,6 +35,18 @@ STORED_FIELDS = (
     "require_delete_approval",
     "live_series_ids",
     "new_season_grace_days",
+    "plex_watchlist_rss_url",
+    "plex_friends_watchlist_rss_url",
+    "watchlist_interval_minutes",
+    "tv_intake_enabled",
+    "movie_intake_enabled",
+    "sonarr_root_folder",
+    "sonarr_quality_profile_id",
+    "radarr_url",
+    "radarr_api_key",
+    "radarr_root_folder",
+    "radarr_quality_profile_id",
+    "radarr_tag",
 )
 _CONNECTION_ENV = (
     ("SONARR_URL", "sonarr_url"),
@@ -91,6 +103,18 @@ class Settings(BaseModel):
     require_delete_approval: bool = True
     live_series_ids: list[int] = Field(default_factory=list)
     new_season_grace_days: int | None = None
+    plex_watchlist_rss_url: str = ""
+    plex_friends_watchlist_rss_url: str = ""
+    watchlist_interval_minutes: int = Field(default=5, ge=1, le=1440)
+    tv_intake_enabled: bool = True
+    movie_intake_enabled: bool = True
+    sonarr_root_folder: str = ""
+    sonarr_quality_profile_id: int | None = None
+    radarr_url: AnyHttpUrl | None = None
+    radarr_api_key: str = ""
+    radarr_root_folder: str = ""
+    radarr_quality_profile_id: int | None = None
+    radarr_tag: str = Field(default="season-keeper", min_length=1)
 
     port: int = Field(default=8787, ge=1, le=65535)
     data_dir: Path = Path("/data")
@@ -103,6 +127,19 @@ class Settings(BaseModel):
     hydrate_limit: int = Field(default=200, ge=0, le=5000)
     run_on_startup: bool = True
     startup_delay_seconds: int = Field(default=10, ge=0, le=3600)
+
+    @field_validator("sonarr_quality_profile_id", "radarr_quality_profile_id", mode="before")
+    @classmethod
+    def _profile_id(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        try:
+            number = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Choose a quality profile") from exc
+        if number <= 0:
+            raise ValueError("Choose a quality profile")
+        return number
 
     @field_validator("new_season_grace_days", mode="before")
     @classmethod
@@ -194,6 +231,25 @@ class Settings(BaseModel):
             raise ValueError("Plex URL is not set")
         return str(self.plex_url).rstrip("/")
 
+    @property
+    def radarr_configured(self) -> bool:
+        return bool(self.radarr_url and self.radarr_api_key.strip())
+
+    @property
+    def radarr_base(self) -> str:
+        if self.radarr_url is None:
+            raise ValueError("Radarr URL is not set")
+        return str(self.radarr_url).rstrip("/")
+
+    @property
+    def watchlist_rss_urls(self) -> tuple[tuple[str, str], ...]:
+        feeds: list[tuple[str, str]] = []
+        if self.plex_watchlist_rss_url.strip():
+            feeds.append(("My Watchlist", self.plex_watchlist_rss_url.strip()))
+        if self.plex_friends_watchlist_rss_url.strip():
+            feeds.append(("Friends' Watchlist", self.plex_friends_watchlist_rss_url.strip()))
+        return tuple(feeds)
+
     def policy(self) -> PolicySettings:
         return PolicySettings(
             watch_window=timedelta(days=self.watch_window_days),
@@ -232,6 +288,18 @@ class SettingsWrite(BaseModel):
     monitor_new_items_when_idle: str | None = None
     require_delete_approval: bool | None = None
     new_season_grace_days: int | None = None
+    plex_watchlist_rss_url: str | None = None
+    plex_friends_watchlist_rss_url: str | None = None
+    watchlist_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    tv_intake_enabled: bool | None = None
+    movie_intake_enabled: bool | None = None
+    sonarr_root_folder: str | None = None
+    sonarr_quality_profile_id: int | None = None
+    radarr_url: str | None = None
+    radarr_api_key: str = ""
+    radarr_root_folder: str | None = None
+    radarr_quality_profile_id: int | None = None
+    radarr_tag: str | None = None
     app_token: str = ""
     clear_app_token: bool = False
 
@@ -246,6 +314,13 @@ class SettingsWrite(BaseModel):
         "app_token",
         "monitor_new_items_when_active",
         "monitor_new_items_when_idle",
+        "plex_watchlist_rss_url",
+        "plex_friends_watchlist_rss_url",
+        "sonarr_root_folder",
+        "radarr_url",
+        "radarr_api_key",
+        "radarr_root_folder",
+        "radarr_tag",
         mode="before",
     )
     @classmethod
@@ -286,6 +361,25 @@ def clean_base_url(value: str, label: str) -> str:
     return f"{parts.scheme}://{netloc}{path}"
 
 
+def clean_rss_url(value: str, label: str) -> str:
+    """Allow the token query Plex puts on a watchlist feed. Reject embedded passwords."""
+    text = value.strip()
+    if not text:
+        return ""
+    parts = urlsplit(text)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError(f"Enter an http or https {label} URL")
+    if parts.username or parts.password:
+        raise ValueError(f"The {label} URL cannot include a username or password")
+    return text
+
+
+def _picked(update: SettingsWrite, name: str, current: object) -> object:
+    if name not in update.model_fields_set:
+        return current
+    return getattr(update, name)
+
+
 def apply_update(current: Settings, update: SettingsWrite) -> Settings:
     api_key = update.sonarr_api_key.strip() or current.sonarr_api_key.strip()
     plex_token = update.plex_token.strip() or current.plex_token.strip()
@@ -306,6 +400,24 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
     if not ignore:
         raise ValueError("Enter an ignore tag")
     keep = current.keep_seasons if update.keep_seasons is None else update.keep_seasons.strip()
+    own_rss = clean_rss_url(
+        str(_picked(update, "plex_watchlist_rss_url", current.plex_watchlist_rss_url) or ""),
+        "My Watchlist RSS",
+    )
+    friends_rss = clean_rss_url(
+        str(_picked(update, "plex_friends_watchlist_rss_url", current.plex_friends_watchlist_rss_url) or ""),
+        "Friends' Watchlist RSS",
+    )
+    radarr_raw = _picked(update, "radarr_url", None if current.radarr_url is None else str(current.radarr_url))
+    radarr_text = "" if radarr_raw is None else str(radarr_raw).strip()
+    radarr_url = clean_base_url(radarr_text, "Radarr") if radarr_text else None
+    radarr_key = update.radarr_api_key.strip() or current.radarr_api_key.strip()
+    radarr_tag = _picked(update, "radarr_tag", current.radarr_tag)
+    radarr_tag = current.radarr_tag if radarr_tag is None else str(radarr_tag).strip()
+    if not radarr_tag:
+        raise ValueError("Enter a Radarr tag")
+    sonarr_root = str(_picked(update, "sonarr_root_folder", current.sonarr_root_folder) or "").strip()
+    radarr_root = str(_picked(update, "radarr_root_folder", current.radarr_root_folder) or "").strip()
     data = current.model_dump()
     data.update(
         sonarr_url=clean_base_url(update.sonarr_url, "Sonarr"),
@@ -337,6 +449,28 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         new_season_grace_days=current.new_season_grace_days
         if "new_season_grace_days" not in update.model_fields_set
         else update.new_season_grace_days,
+        plex_watchlist_rss_url=own_rss,
+        plex_friends_watchlist_rss_url=friends_rss,
+        watchlist_interval_minutes=current.watchlist_interval_minutes
+        if update.watchlist_interval_minutes is None
+        else update.watchlist_interval_minutes,
+        tv_intake_enabled=current.tv_intake_enabled
+        if update.tv_intake_enabled is None
+        else update.tv_intake_enabled,
+        movie_intake_enabled=current.movie_intake_enabled
+        if update.movie_intake_enabled is None
+        else update.movie_intake_enabled,
+        sonarr_root_folder=sonarr_root,
+        sonarr_quality_profile_id=_picked(
+            update, "sonarr_quality_profile_id", current.sonarr_quality_profile_id
+        ),
+        radarr_url=radarr_url,
+        radarr_api_key=radarr_key,
+        radarr_root_folder=radarr_root,
+        radarr_quality_profile_id=_picked(
+            update, "radarr_quality_profile_id", current.radarr_quality_profile_id
+        ),
+        radarr_tag=radarr_tag,
         app_token=app_token,
     )
     return Settings.model_validate(data)
@@ -347,7 +481,7 @@ def dump_stored(settings: Settings) -> dict:
     payload: dict = {}
     for key in STORED_FIELDS:
         value = raw.get(key)
-        if key in {"sonarr_url", "plex_url"}:
+        if key in {"sonarr_url", "plex_url", "radarr_url"}:
             payload[key] = "" if not value else str(value).rstrip("/")
         else:
             payload[key] = value
@@ -389,6 +523,20 @@ def public_settings(settings: Settings) -> dict:
         "live_series_ids": list(settings.live_series_ids),
         "new_season_grace_days": settings.new_season_grace_days,
         "new_season_grace_days_effective": settings.policy().new_season_grace.days,
+        "plex_watchlist_rss_url": settings.plex_watchlist_rss_url,
+        "plex_friends_watchlist_rss_url": settings.plex_friends_watchlist_rss_url,
+        "watchlist_interval_minutes": settings.watchlist_interval_minutes,
+        "tv_intake_enabled": settings.tv_intake_enabled,
+        "movie_intake_enabled": settings.movie_intake_enabled,
+        "sonarr_root_folder": settings.sonarr_root_folder,
+        "sonarr_quality_profile_id": settings.sonarr_quality_profile_id,
+        "radarr_url": "" if settings.radarr_url is None else str(settings.radarr_url).rstrip("/"),
+        "radarr_configured": settings.radarr_configured,
+        "radarr_api_key_set": bool(settings.radarr_api_key.strip()),
+        "radarr_api_key_hint": mask_secret(settings.radarr_api_key),
+        "radarr_root_folder": settings.radarr_root_folder,
+        "radarr_quality_profile_id": settings.radarr_quality_profile_id,
+        "radarr_tag": settings.radarr_tag,
         "app_token_set": bool(settings.app_token),
     }
 
@@ -414,7 +562,7 @@ def _from_stored(base: Settings, stored: dict) -> Settings:
     for key in STORED_FIELDS:
         if key not in stored or stored[key] is None:
             continue
-        if key in {"sonarr_url", "plex_url"} and str(stored[key]).strip() == "":
+        if key in {"sonarr_url", "plex_url", "radarr_url"} and str(stored[key]).strip() == "":
             continue
         data[key] = stored[key]
     return Settings.model_validate(data)

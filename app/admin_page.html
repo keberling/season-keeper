@@ -194,6 +194,79 @@
         <button id="scope-clear" class="ghost" type="button">Clear, so every show is live</button>
       </div>
       <div class="card">
+        <h2>Watchlist</h2>
+        <p>Plex Web, Settings, Watchlist. Paste My Watchlist and Friends' Watchlist. Leave both blank to use the owner token with Plex Discover, which is your list only.</p>
+        <label class="field">
+          <span>My Watchlist RSS</span>
+          <input id="watchlist-rss" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://rss.plex.tv/...">
+        </label>
+        <label class="field">
+          <span>Friends' Watchlist RSS</span>
+          <input id="friends-rss" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://rss.plex.tv/...">
+          <p class="hint">These links contain a token. They are saved with the other settings and are not written to the container log.</p>
+        </label>
+        <div class="pair">
+          <label class="field">
+            <span>Watchlist check (minutes)</span>
+            <input id="watchlist-interval" type="number" min="1" max="1440" value="5" required>
+            <p class="hint">The library cycle also reads the watchlist. This is the shorter extra check.</p>
+          </label>
+          <label class="field">
+            <span>Sonarr tag for added shows</span>
+            <input id="sonarr-tag" type="text" value="season-keeper" autocomplete="off" spellcheck="false" required>
+            <p class="hint">New shows get this tag. Season 1 is monitored and searched. Specials are not.</p>
+          </label>
+        </div>
+        <label class="check">
+          <input id="tv-intake" type="checkbox" checked>
+          <span>Add TV from the watchlist to Sonarr</span>
+        </label>
+        <label class="check">
+          <input id="movie-intake" type="checkbox" checked>
+          <span>Add movies from the watchlist to Radarr</span>
+        </label>
+        <p class="hint">Both are on once the servers are saved. Adds wait until Live, the same as other Sonarr and Radarr writes. A new watchlist item still restarts the quiet-day clock while you are in preview, so it is not pruned immediately.</p>
+        <div class="pair">
+          <label class="field">
+            <span>Sonarr root folder</span>
+            <select id="sonarr-root"></select>
+          </label>
+          <label class="field">
+            <span>Sonarr quality profile</span>
+            <select id="sonarr-profile"></select>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Radarr</h2>
+        <p>Movies are added, monitored, and searched. Season Keeper does not delete movies.</p>
+        <div class="pair">
+          <label class="field">
+            <span>Radarr URL</span>
+            <input id="radarr-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.10:7878">
+          </label>
+          <label class="field">
+            <span>Radarr API key</span>
+            <input id="radarr-key" type="password" autocomplete="off" spellcheck="false" placeholder="Settings, General, API Key">
+            <p id="radarr-key-hint" class="hint"></p>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Radarr root folder</span>
+            <select id="radarr-root"></select>
+          </label>
+          <label class="field">
+            <span>Radarr quality profile</span>
+            <select id="radarr-profile"></select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Radarr tag</span>
+          <input id="radarr-tag" type="text" value="season-keeper" autocomplete="off" spellcheck="false" required>
+        </label>
+      </div>
+      <div class="card">
         <h2>Access token</h2>
         <p>Optional. When set, the library page and this page ask for it before a change. Leave the field blank to keep the saved token.</p>
         <label class="field">
@@ -208,12 +281,13 @@
       <div class="actions">
         <p id="result" class="hint" role="status"></p>
         <button id="test" class="ghost" type="button">Test connection</button>
+        <button id="test-radarr" class="ghost" type="button">Test Radarr</button>
         <button id="save" class="primary" type="submit">Save</button>
       </div>
     </form>
   </main>
   <script>
-    const state = { loaded: null, shows: [] };
+    const state = { loaded: null, shows: [], sonarrFolders: [], sonarrProfiles: [], radarrFolders: [], radarrProfiles: [] };
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -313,9 +387,56 @@
         search_cooldown_hours: Number(document.getElementById("cooldown").value),
         monitor_new_items_when_active: document.getElementById("active").value,
         monitor_new_items_when_idle: document.getElementById("idle").value,
+        plex_watchlist_rss_url: document.getElementById("watchlist-rss").value.trim(),
+        plex_friends_watchlist_rss_url: document.getElementById("friends-rss").value.trim(),
+        watchlist_interval_minutes: Number(document.getElementById("watchlist-interval").value),
+        tv_intake_enabled: document.getElementById("tv-intake").checked,
+        movie_intake_enabled: document.getElementById("movie-intake").checked,
+        sonarr_tag: document.getElementById("sonarr-tag").value.trim(),
+        sonarr_root_folder: document.getElementById("sonarr-root").value
+          || (state.loaded && state.loaded.sonarr_root_folder)
+          || "",
+        sonarr_quality_profile_id: chosenProfile("sonarr-profile", state.loaded && state.loaded.sonarr_quality_profile_id),
+        radarr_url: document.getElementById("radarr-url").value.trim(),
+        radarr_api_key: document.getElementById("radarr-key").value,
+        radarr_root_folder: document.getElementById("radarr-root").value
+          || (state.loaded && state.loaded.radarr_root_folder)
+          || "",
+        radarr_quality_profile_id: chosenProfile("radarr-profile", state.loaded && state.loaded.radarr_quality_profile_id),
+        radarr_tag: document.getElementById("radarr-tag").value.trim(),
         app_token: document.getElementById("app-token").value,
         clear_app_token: document.getElementById("clear-token").checked
       };
+    }
+
+    function chosenProfile(id, saved) {
+      const value = document.getElementById(id).value;
+      if (value) return Number(value);
+      return saved == null || saved === "" ? null : Number(saved);
+    }
+
+    function refreshSelects() {
+      const data = state.loaded || {};
+      fillSelect(document.getElementById("sonarr-root"), state.sonarrFolders || [], data.sonarr_root_folder, "Choose a root folder", "path", "path");
+      fillSelect(document.getElementById("sonarr-profile"), state.sonarrProfiles || [], data.sonarr_quality_profile_id, "Choose a quality profile", "id", "name");
+      fillSelect(document.getElementById("radarr-root"), state.radarrFolders || [], data.radarr_root_folder, "Choose a root folder", "path", "path");
+      fillSelect(document.getElementById("radarr-profile"), state.radarrProfiles || [], data.radarr_quality_profile_id, "Choose a quality profile", "id", "name");
+    }
+
+    function fillSelect(select, rows, selected, placeholder, valueKey, labelKey) {
+      const current = selected == null ? "" : String(selected);
+      const html = ['<option value="">' + esc(placeholder) + "</option>"];
+      let found = false;
+      rows.forEach((row) => {
+        const value = row[valueKey];
+        if (String(value) === current) found = true;
+        const picked = String(value) === current ? " selected" : "";
+        html.push('<option value="' + esc(value) + '"' + picked + ">" + esc(row[labelKey]) + "</option>");
+      });
+      if (current && !found) {
+        html.push('<option value="' + esc(current) + '" selected>' + esc(current) + "</option>");
+      }
+      select.innerHTML = html.join("");
     }
 
     function fill(data) {
@@ -347,6 +468,19 @@
       const kept = (data.keep_seasons_effective || [1]).join(", ");
       document.getElementById("keep-note").textContent = "Season 1 is always kept. Specials (season 0) are ignored. Effective seasons: " + kept + ".";
       document.getElementById("tag").value = data.ignore_tag || "keep-all";
+      document.getElementById("sonarr-tag").value = data.sonarr_tag || "season-keeper";
+      document.getElementById("watchlist-rss").value = data.plex_watchlist_rss_url || "";
+      document.getElementById("friends-rss").value = data.plex_friends_watchlist_rss_url || "";
+      document.getElementById("watchlist-interval").value = data.watchlist_interval_minutes || 5;
+      document.getElementById("tv-intake").checked = data.tv_intake_enabled !== false;
+      document.getElementById("movie-intake").checked = data.movie_intake_enabled !== false;
+      document.getElementById("radarr-url").value = data.radarr_url || "";
+      document.getElementById("radarr-key").value = "";
+      document.getElementById("radarr-key-hint").textContent = data.radarr_api_key_set
+        ? ("A key is saved. " + (data.radarr_api_key_hint || "Leave the field blank to keep it."))
+        : "Radarr, Settings, General, API Key.";
+      document.getElementById("radarr-tag").value = data.radarr_tag || "season-keeper";
+      refreshSelects();
       document.getElementById("interval").value = data.watch_interval_minutes;
       document.getElementById("cooldown").value = data.search_cooldown_hours;
       document.getElementById("active").value = data.monitor_new_items_when_active || "all";
@@ -422,6 +556,7 @@
       const data = await api("/api/settings");
       fill(data);
       await loadScope();
+      await loadLibraryOptions();
     }
 
     async function save() {
@@ -456,6 +591,11 @@
             + "  Plex: " + (plex.ok ? "OK. " : "Failed. ") + (plex.detail || ""),
           ok
         );
+        if (result.sonarr_options) {
+          state.sonarrFolders = result.sonarr_options.root_folders || [];
+          state.sonarrProfiles = result.sonarr_options.quality_profiles || [];
+          refreshSelects();
+        }
       } catch (error) {
         report(error.message, false);
       } finally {
@@ -463,11 +603,55 @@
       }
     }
 
+    async function testRadarr() {
+      const button = document.getElementById("test-radarr");
+      button.disabled = true;
+      report("Testing Radarr…", true);
+      try {
+        const result = await api("/api/radarr/test", {
+          method: "POST",
+          body: JSON.stringify({
+            radarr_url: document.getElementById("radarr-url").value.trim(),
+            radarr_api_key: document.getElementById("radarr-key").value
+          })
+        });
+        state.radarrFolders = result.root_folders || [];
+        state.radarrProfiles = result.quality_profiles || [];
+        refreshSelects();
+        report((result.ok ? "Radarr: OK. " : "Radarr: Failed. ") + (result.detail || ""), Boolean(result.ok));
+      } catch (error) {
+        report(error.message, false);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function loadLibraryOptions() {
+      try {
+        const sonarr = await api("/api/sonarr/options");
+        state.sonarrFolders = sonarr.root_folders || [];
+        state.sonarrProfiles = sonarr.quality_profiles || [];
+      } catch (error) {
+        state.sonarrFolders = state.sonarrFolders || [];
+        state.sonarrProfiles = state.sonarrProfiles || [];
+      }
+      try {
+        const radarr = await api("/api/radarr/options");
+        state.radarrFolders = radarr.root_folders || [];
+        state.radarrProfiles = radarr.quality_profiles || [];
+      } catch (error) {
+        state.radarrFolders = state.radarrFolders || [];
+        state.radarrProfiles = state.radarrProfiles || [];
+      }
+      refreshSelects();
+    }
+
     document.getElementById("form").addEventListener("submit", (event) => {
       event.preventDefault();
       save();
     });
     document.getElementById("test").addEventListener("click", testConnection);
+    document.getElementById("test-radarr").addEventListener("click", testRadarr);
     document.getElementById("live-confirm").addEventListener("change", syncMode);
     document.getElementById("approval").addEventListener("change", syncMode);
     document.querySelectorAll('input[name="run-mode"]').forEach((input) => {

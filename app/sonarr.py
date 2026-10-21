@@ -154,17 +154,49 @@ def partition_ignored(series_rows: list[dict], tag_id: int) -> tuple[list[dict],
     return managed, ignored
 
 
+def series_add_payload(looked_up: dict, *, profile_id: int, root: str, tag_id: int) -> dict:
+    """Turn a Sonarr lookup into an add that monitors and searches season 1 only."""
+    payload = copy.deepcopy(looked_up)
+    for key in ("id", "statistics", "previousAiring", "nextAiring", "episodesChanged", "episodes"):
+        payload.pop(key, None)
+    payload["qualityProfileId"] = int(profile_id)
+    payload["rootFolderPath"] = root
+    payload["monitored"] = True
+    payload["seasonFolder"] = True
+    payload["tags"] = [int(tag_id)]
+    payload["addOptions"] = {"monitor": "firstSeason", "searchForMissingEpisodes": True}
+    seasons = payload.setdefault("seasons", [])
+    present: set[int] = set()
+    for season in seasons:
+        number = int(season.get("seasonNumber") or 0)
+        present.add(number)
+        season["monitored"] = number == 1
+        season.pop("statistics", None)
+        season.pop("images", None)
+    if 1 not in present:
+        seasons.append({"seasonNumber": 1, "monitored": True})
+    return payload
+
+
 class SonarrClient:
-    def __init__(self, base_url: str, api_key: str, timeout: float):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        client: httpx.Client | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._client = httpx.Client(
+        self._owns_client = client is None
+        self._client = client or httpx.Client(
             timeout=timeout,
             headers={"X-Api-Key": api_key, "Accept": "application/json"},
         )
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
@@ -196,6 +228,21 @@ class SonarrClient:
 
     def list_series(self) -> list[dict]:
         return self._request("GET", "/api/v3/series") or []
+
+    def root_folders(self) -> list[dict]:
+        return self._request("GET", "/api/v3/rootfolder") or []
+
+    def quality_profiles(self) -> list[dict]:
+        return self._request("GET", "/api/v3/qualityprofile") or []
+
+    def lookup_series(self, term: str) -> dict | None:
+        rows = self._request("GET", "/api/v3/series/lookup", params={"term": term}) or []
+        if not rows:
+            return None
+        return rows[0]
+
+    def add_series(self, payload: dict) -> dict:
+        return self._request("POST", "/api/v3/series", json=payload) or {}
 
     def list_episodes(self, series_id: int) -> list[dict]:
         return (

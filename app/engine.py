@@ -65,6 +65,8 @@ def watch_for(series: SeriesSnapshot, index: WatchIndex) -> ShowWatch:
         active_users=tuple(sorted(activity.active_users)),
         unknown_season_at=activity.unknown_season_at,
         history_reliable=reliable,
+        watchlisted_at=activity.watchlisted_at,
+        watchlisted_by=activity.watchlisted_by,
     )
 
 
