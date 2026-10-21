@@ -142,15 +142,6 @@ def series_tag_payload(raw: dict, tags: list[int]) -> dict:
     return payload
 
 
-def select_tagged(series_rows: list[dict], tag_id: int) -> list[dict]:
-    selected = []
-    for row in series_rows:
-        tags = row.get("tags") or []
-        if tag_id in tags:
-            selected.append(row)
-    return selected
-
-
 def partition_ignored(series_rows: list[dict], tag_id: int) -> tuple[list[dict], list[dict]]:
     managed: list[dict] = []
     ignored: list[dict] = []

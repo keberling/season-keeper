@@ -258,7 +258,7 @@ def test_admin_api_round_trip_masks_secrets_and_does_not_run(tmp_path, monkeypat
         page = client.get("/")
         assert page.status_code == 200
         assert "Admin" in page.text
-        assert "Test delete on this show" in page.text
+        assert "Queue season deletion" in page.text
         admin = client.get("/admin")
         assert admin.status_code == 200
         assert "Sonarr URL" in admin.text

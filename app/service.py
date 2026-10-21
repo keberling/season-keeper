@@ -53,7 +53,7 @@ def run_cycle(
     try:
         report = _run_cycle(settings, state, sonarr, plex, moment, progress)
     except Exception as exc:
-        logger.exception("Cycle failed before any library changes")
+        logger.exception("The cycle stopped before any library changes")
         report = RunReport(
             started_at=started.isoformat(),
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -84,7 +84,7 @@ def _run_cycle(
         plex_name = plex.server_name()
     except Exception:
         plex_name = "unknown"
-    logger.info("Talking to Sonarr %s and Plex %s", version, plex_name)
+    logger.debug("Talking to Sonarr %s and Plex %s", version, plex_name)
 
     tag_id = sonarr.ensure_tag(settings.ignore_tag)
     rows, ignored = partition_ignored(sonarr.list_series(), tag_id)
@@ -200,12 +200,12 @@ def delete_later_seasons(
         queue=set(),
         running_searches=set(),
         announce_preview=False,
+        confirmed=True,
     )
     if not result.error:
         state.clear_dismissed(series.id)
     _preserve_watch(state, result)
     state.replace_series(result.to_dict())
-    logger.info("Manual delete for %s: %s", series.label, result.reason)
     return result
 
 
@@ -234,7 +234,6 @@ def download_later_seasons(
     )
     _preserve_watch(state, result)
     state.replace_series(result.to_dict())
-    logger.info("Manual download for %s: %s", series.label, result.reason)
     return result
 
 

@@ -351,8 +351,8 @@ def test_page_has_the_preview_and_one_show_actions():
     page = (Path(__file__).resolve().parents[1] / "app" / "status_page.html").read_text(encoding="utf-8")
     for text in (
         "Preview mode",
-        "Test delete on this show",
-        "Download later seasons",
+        "Queue season deletion",
+        "Download missing seasons",
         "Season 1",
         "Would free",
         "Available to save",

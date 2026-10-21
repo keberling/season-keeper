@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Savings — Season Keeper</title>
+  <title>Stats — Season Keeper</title>
   <style>
     :root {
       color-scheme: dark;
@@ -28,13 +28,11 @@
       font: 16px/1.45 "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
     }
     a { color: var(--amber); }
-    .wrap { width: min(880px, calc(100% - 32px)); margin: 0 auto; }
-    header.top {
-      border-bottom: 1px solid var(--line);
-      background: rgba(18, 20, 16, 0.9);
-    }
+    .wrap { width: min(980px, calc(100% - 32px)); margin: 0 auto; }
+    header.top { border-bottom: 1px solid var(--line); background: rgba(18, 20, 16, 0.9); }
     .top-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 18px 0; }
     h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.02em; }
+    h2 { font-size: 1rem; margin: 8px 0 0; }
     .ghost {
       color: var(--text);
       text-decoration: none;
@@ -43,48 +41,88 @@
       padding: 8px 14px;
     }
     main { padding: 22px 0 48px; display: grid; gap: 16px; }
-    .note, .card, .event {
+    .note, .card, .event, .cycle, .show-row {
       background: var(--bg-raise);
       border: 1px solid var(--line);
       border-radius: 16px;
     }
     .note { padding: 14px 16px; color: var(--muted); }
-    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
     .card { padding: 16px; }
     .card span { display: block; color: var(--faint); font-size: 0.82rem; }
     .card strong { display: block; margin-top: 6px; font-size: 1.45rem; font-variant-numeric: tabular-nums; }
     .card em { display: block; margin-top: 6px; color: var(--muted); font-style: normal; font-size: 0.88rem; }
-    .events { display: grid; gap: 8px; }
-    .event { padding: 12px 14px; display: flex; justify-content: space-between; gap: 12px; }
-    .event b { font-weight: 650; }
     .meta { color: var(--faint); font-size: 0.88rem; }
-    h2 { font-size: 1rem; margin: 8px 0 0; }
+    .chart { display: flex; align-items: flex-end; gap: 6px; min-height: 140px; padding: 12px; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 16px; }
+    .bar { flex: 1; min-width: 8px; background: var(--amber); border-radius: 6px 6px 2px 2px; min-height: 4px; }
+    .bar.live { background: var(--green); }
+    .events, .cycles, .shows { display: grid; gap: 8px; }
+    .event, .cycle, .show-row { padding: 12px 14px; display: flex; justify-content: space-between; gap: 12px; }
+    .event b, .show-row b { font-weight: 650; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters button, .filters input {
+      background: transparent;
+      color: inherit;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+    }
+    .filters button[aria-pressed="true"] { background: var(--text); color: #16180f; border-color: transparent; }
+    .filters input { border-radius: 10px; min-width: 180px; }
+    table { width: 100%; border-collapse: collapse; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--faint); font-weight: 600; font-size: 0.82rem; }
     [hidden] { display: none !important; }
-    @media (max-width: 700px) {
-      .stats { grid-template-columns: 1fr; }
-      .top-row, .event { flex-direction: column; align-items: flex-start; }
+    @media (max-width: 800px) {
+      .stats { grid-template-columns: 1fr 1fr; }
+      .top-row, .event, .cycle, .show-row { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
 <body>
   <header class="top">
     <div class="wrap top-row">
-      <h1>Savings</h1>
+      <h1>Stats</h1>
       <a class="ghost" href="/">Library</a>
     </div>
   </header>
   <main class="wrap">
-    <p class="note">Possible and ready numbers come from the last Sonarr scan. They are the size Sonarr reports for the episode files in the show folders. A hardlinked download still occupies that space, so deleting the show-folder name does not always free the disk. Removed totals count live deletes Season Keeper has finished. Preview runs are not counted.</p>
+    <p class="note">Possible and ready numbers come from the last Sonarr scan. They are the size Sonarr reports for the episode files in the show folders. A hardlinked download still occupies that space, so deleting the show-folder name does not always free the disk. Reclaimed totals count live deletes Season Keeper has finished. Preview runs are not counted as reclaimed.</p>
     <section class="stats">
       <article class="card"><span>Possible</span><strong id="possible">—</strong><em>Later seasons the rule can change</em></article>
       <article class="card"><span>Ready now</span><strong id="ready">—</strong><em>Quiet shows the last scan would remove</em></article>
-      <article class="card"><span>Removed</span><strong id="freed">—</strong><em id="freed-note">From show folders, since this page started recording</em></article>
+      <article class="card"><span>Reclaimed</span><strong id="freed">—</strong><em>Removed from show folders, all time</em></article>
+      <article class="card"><span>Last 7 days</span><strong id="recent">—</strong><em>Space reclaimed this week</em></article>
+      <article class="card"><span>Waiting for approval</span><strong id="pending">—</strong><em>Queued until you approve</em></article>
+      <article class="card"><span>Seasons restored</span><strong id="restored">—</strong><em>Later seasons Sonarr was asked to fetch</em></article>
+      <article class="card"><span>Searches</span><strong id="searches">—</strong><em>Season searches sent to Sonarr</em></article>
+      <article class="card"><span>New seasons protected</span><strong id="protected">—</strong><em>Too new to remove, from the last scan</em></article>
     </section>
     <p id="scanned" class="meta"></p>
-    <h2>Removed over time</h2>
-    <div id="events" class="events"></div>
+    <h2>Each cycle</h2>
+    <p class="meta">Each bar is one pass over the library. Taller means more shows lined up to lose later seasons. Green bars are live runs.</p>
+    <div id="chart" class="chart"></div>
+    <table>
+      <thead><tr><th>When</th><th>Mode</th><th>What happened</th></tr></thead>
+      <tbody id="cycles"></tbody>
+    </table>
+    <h2>Shows holding the most space</h2>
+    <div id="shows" class="shows"></div>
+    <h2>Activity</h2>
+    <div class="filters">
+      <button type="button" data-kind="" aria-pressed="true">All</button>
+      <button type="button" data-kind="deleted">Deleted</button>
+      <button type="button" data-kind="approved">Approved</button>
+      <button type="button" data-kind="approval">Asked for approval</button>
+      <button type="button" data-kind="dismissed">Dismissed</button>
+      <button type="button" data-kind="restored">Restored</button>
+      <input id="activity-q" type="search" placeholder="Filter by show" aria-label="Filter activity">
+    </div>
+    <div id="activity" class="events"></div>
   </main>
   <script>
+    const state = { kind: "", query: "" };
+
     function formatBytes(value) {
       const bytes = Number(value) || 0;
       if (bytes < 1024) return bytes + " B";
@@ -95,14 +133,92 @@
         size /= 1024;
         unit += 1;
       }
-      return (size >= 100 ? size.toFixed(0) : size.toFixed(1)) + " " + units[unit];
+      const digits = size >= 10 ? 1 : 2;
+      return size.toFixed(digits) + " " + units[unit];
+    }
+
+    function relative(date) {
+      const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+      const abs = Math.abs(minutes);
+      if (abs < 1) return "just now";
+      const suffix = minutes < 0 ? "from now" : "ago";
+      if (abs < 60) return abs === 1 ? "1 minute " + suffix : abs + " minutes " + suffix;
+      const hours = Math.round(abs / 60);
+      if (hours < 36) return hours === 1 ? "1 hour " + suffix : hours + " hours " + suffix;
+      const days = Math.round(hours / 24);
+      return days === 1 ? "1 day " + suffix : days + " days " + suffix;
     }
 
     function when(value) {
       if (!value) return "";
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
-      return date.toLocaleString();
+      const full = date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      return full + " · " + relative(date);
+    }
+
+    function escapeText(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+
+    function renderChart(cycles) {
+      const host = document.getElementById("chart");
+      const ordered = (cycles || []).slice().reverse();
+      if (!ordered.length) {
+        host.innerHTML = `<p class="note">No cycles recorded yet. Refresh the library to write the first one.</p>`;
+        return;
+      }
+      const max = Math.max(1, ...ordered.map((cycle) => Number(cycle.prune) || 0));
+      host.innerHTML = ordered.map((cycle) => {
+        const height = Math.max(6, Math.round(((Number(cycle.prune) || 0) / max) * 120));
+        const mode = cycle.dry_run ? "Preview" : "Live";
+        return `<i class="bar ${cycle.dry_run ? "" : "live"}" style="height:${height}px" title="${escapeText(mode + ": " + cycle.summary)}"></i>`;
+      }).join("");
+    }
+
+    function renderCycles(cycles) {
+      const body = document.getElementById("cycles");
+      if (!cycles || !cycles.length) {
+        body.innerHTML = `<tr><td colspan="3">No cycles yet.</td></tr>`;
+        return;
+      }
+      body.innerHTML = cycles.map((cycle) => `<tr>
+        <td>${escapeText(when(cycle.finished_at))}</td>
+        <td>${cycle.dry_run ? "Preview" : "Live"}</td>
+        <td>${escapeText(cycle.summary)}</td>
+      </tr>`).join("");
+    }
+
+    function renderShows(shows) {
+      const host = document.getElementById("shows");
+      if (!shows || !shows.length) {
+        host.innerHTML = `<p class="note">No show sizes yet. Refresh the library preview.</p>`;
+        return;
+      }
+      host.innerHTML = shows.map((show) => {
+        const waiting = show.pending_approval ? " · waiting for approval" : "";
+        return `<article class="show-row"><div><b>${escapeText(show.title)}</b><div class="meta">${escapeText(show.action || "")}${waiting}</div></div><b>${formatBytes(show.bytes)}</b></article>`;
+      }).join("");
+    }
+
+    function renderActivity(events) {
+      const host = document.getElementById("activity");
+      if (!events.length) {
+        host.innerHTML = `<p class="note">No matching activity yet. Deletes, restores, and approval choices show up here.</p>`;
+        return;
+      }
+      host.innerHTML = events.map((event) => `<article class="event"><div><b>${escapeText(event.title)}</b><div class="meta">${escapeText(when(event.at))} · ${escapeText(event.message)}</div></div></article>`).join("");
+    }
+
+    async function loadActivity() {
+      const params = new URLSearchParams();
+      if (state.kind) params.set("kind", state.kind);
+      if (state.query) params.set("q", state.query);
+      const response = await fetch("/api/activity?" + params.toString(), { headers: { Accept: "application/json" } });
+      const body = await response.json();
+      renderActivity(body.events || []);
     }
 
     async function load() {
@@ -111,26 +227,37 @@
       document.getElementById("possible").textContent = formatBytes(body.possible_bytes);
       document.getElementById("ready").textContent = formatBytes(body.ready_bytes);
       document.getElementById("freed").textContent = formatBytes(body.freed_bytes);
+      document.getElementById("recent").textContent = formatBytes(body.recent_freed_bytes);
+      document.getElementById("pending").textContent = formatBytes(body.pending_bytes);
+      document.getElementById("restored").textContent = String(body.restored_seasons || 0);
+      document.getElementById("searches").textContent = String(body.searches || 0);
+      document.getElementById("protected").textContent = String(body.protected_seasons || 0);
       document.getElementById("scanned").textContent = body.scanned_at
         ? `Last scan ${when(body.scanned_at)}. ${body.series_count} show${body.series_count === 1 ? "" : "s"} in the last scan.`
-        : "No scan yet. Refresh the library preview to fill the possible and ready totals.";
-      const host = document.getElementById("events");
-      const events = body.events || [];
-      if (!events.length) {
-        host.innerHTML = `<p class="note">No live deletes have been recorded yet.</p>`;
-        return;
-      }
-      host.innerHTML = events.map((event) => {
-        const files = `${event.file_count} file${event.file_count === 1 ? "" : "s"}`;
-        return `<article class="event"><div><b>${escapeText(event.title)}</b><div class="meta">${when(event.freed_at)} · ${files}</div></div><b>${formatBytes(event.bytes)}</b></article>`;
-      }).join("");
+        : "No scan yet. Refresh the library preview to fill these totals.";
+      renderChart(body.cycles);
+      renderCycles(body.cycles);
+      renderShows(body.top_shows);
+      await loadActivity();
     }
 
-    function escapeText(value) {
-      return String(value).replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-      }[char]));
-    }
+    document.querySelector(".filters").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      state.kind = button.dataset.kind || "";
+      document.querySelectorAll(".filters button").forEach((item) => {
+        item.setAttribute("aria-pressed", item === button ? "true" : "false");
+      });
+      loadActivity().catch((error) => {
+        document.getElementById("activity").textContent = error.message;
+      });
+    });
+    document.getElementById("activity-q").addEventListener("input", (event) => {
+      state.query = event.target.value.trim();
+      loadActivity().catch((error) => {
+        document.getElementById("activity").textContent = error.message;
+      });
+    });
 
     load().catch((error) => {
       document.getElementById("scanned").textContent = error.message;
