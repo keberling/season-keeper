@@ -16,7 +16,7 @@ def _apply(tmp_path, *, dry_run: bool):
         watch=watch(),
         actions=FakeSonarr(),
         state=state,
-        settings=policy(dry_run=dry_run),
+        settings=policy(dry_run=dry_run, require_delete_approval=False),
         now=NOW,
         queue=set(),
         running_searches=set(),

@@ -188,7 +188,7 @@ def delete_later_seasons(
 ) -> SeriesResult:
     moment = now or datetime.now(timezone.utc)
     series = _load_one(sonarr, settings, series_id, moment)
-    policy = replace(settings.policy(), dry_run=False)
+    policy = replace(settings.policy(), dry_run=False, require_delete_approval=False)
     result = apply_decision(
         series,
         plan_manual_prune(series, policy),
@@ -201,6 +201,8 @@ def delete_later_seasons(
         running_searches=set(),
         announce_preview=False,
     )
+    if not result.error:
+        state.clear_dismissed(series.id)
     _preserve_watch(state, result)
     state.replace_series(result.to_dict())
     logger.info("Manual delete for %s: %s", series.label, result.reason)

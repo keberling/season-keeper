@@ -98,6 +98,8 @@ class PolicySettings:
     search_cooldown: timedelta
     monitor_new_when_active: str
     monitor_new_when_idle: str
+    require_delete_approval: bool = True
+    live_series_ids: frozenset[int] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,9 @@ class SeriesResult:
     later_bytes: int = 0
     files_targeted: int = 0
     applied: bool = False
+    pending_approval: bool = False
+    dismissed: bool = False
+    in_live_scope: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -245,6 +250,9 @@ class SeriesResult:
             "later_bytes": self.later_bytes,
             "files_targeted": self.files_targeted,
             "applied": self.applied,
+            "pending_approval": self.pending_approval,
+            "dismissed": self.dismissed,
+            "in_live_scope": self.in_live_scope,
         }
 
 

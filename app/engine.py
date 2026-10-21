@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -144,14 +145,23 @@ def apply_decision(
             continue
         planned.append(season)
 
+    needs_approval = (
+        decision.action == "prune"
+        and not settings.dry_run
+        and settings.require_delete_approval
+    )
     if settings.dry_run and announce_preview and decision.action in {"prune", "restore"}:
         reason = "Preview only. " + reason
+    if needs_approval:
+        reason = "Approval required before any files are deleted. " + reason
     if waiting:
         reason = reason + " Waiting: " + "; ".join(waiting) + "."
 
     try:
         assert_safe(series, decision, keep)
-        if not settings.dry_run and decision.action in {"prune", "restore"}:
+        if needs_approval:
+            pass
+        elif not settings.dry_run and decision.action in {"prune", "restore"}:
             if decision.season_monitored is not None:
                 payload = series_update_payload(
                     series.raw,
@@ -237,6 +247,7 @@ def apply_decision(
         later_bytes=totals.later_bytes,
         files_targeted=len(decision.delete_file_ids),
         applied=applied,
+        pending_approval=needs_approval and error is None,
     )
 
 
@@ -254,33 +265,59 @@ def execute(
     started = now
     results: list[SeriesResult] = []
     total = len(series_list)
+    dismissed = state.dismissed_ids()
+    allowlist = settings.live_series_ids
     if total == 0:
         report(progress, "Checking shows, 0 of 0.", done=0, total=0)
     for index_number, series in enumerate(series_list, start=1):
         report(progress, f"Checking shows, {index_number} of {total}.", done=index_number, total=total)
         watch = watch_for(series, index)
         decision = decide(series, watch, now, settings)
-        results.append(
-            apply_decision(
-                series,
-                decision,
-                watch=watch,
-                actions=actions,
-                state=state,
-                settings=settings,
-                now=now,
-                queue=queue,
-                running_searches=running_searches,
-            )
+        outside = bool(allowlist) and series.id not in allowlist and not settings.dry_run
+        scoped = replace(settings, dry_run=True) if outside else settings
+        result = apply_decision(
+            series,
+            decision,
+            watch=watch,
+            actions=actions,
+            state=state,
+            settings=scoped,
+            now=now,
+            queue=queue,
+            running_searches=running_searches,
+            announce_preview=not outside,
         )
+        if outside and result.action in {"prune", "restore"}:
+            result.searches_ran = []
+            result.reason = (
+                "Outside the live allowlist, so this show was left unchanged. " + result.reason
+            )
+        result.in_live_scope = not settings.dry_run and not outside
+        if result.action != "prune":
+            if series.id in dismissed:
+                state.clear_dismissed(series.id)
+        elif series.id in dismissed:
+            result.pending_approval = False
+            result.dismissed = True
+            result.reason = (
+                "Dismissed. Files stay until you approve a delete. " + result.reason
+            )
+        results.append(result)
     finished = datetime.now(timezone.utc)
     counts = {}
+    pending = 0
     for result in results:
         counts[result.action] = counts.get(result.action, 0) + 1
+        if result.pending_approval:
+            pending += 1
+    scope = "all" if not allowlist else str(len(allowlist))
     logger.info(
-        "Cycle finished dry_run=%s series=%s %s",
+        "Cycle finished dry_run=%s approval=%s live_scope=%s series=%s pending=%s %s",
         settings.dry_run,
+        settings.require_delete_approval,
+        scope,
         len(results),
+        pending,
         " ".join(f"{name}={count}" for name, count in sorted(counts.items())),
     )
     return RunReport(

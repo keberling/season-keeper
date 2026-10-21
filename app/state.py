@@ -38,6 +38,10 @@ class State:
                 file_count INTEGER NOT NULL,
                 bytes INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS dismissed (
+                sonarr_id INTEGER PRIMARY KEY,
+                dismissed_at TEXT NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -117,6 +121,36 @@ class State:
             }
             for freed_at, sonarr_id, title, file_count, nbytes in rows
         ]
+
+    def dismiss(self, sonarr_id: int, when: datetime) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO dismissed (sonarr_id, dismissed_at)
+                VALUES (?, ?)
+                ON CONFLICT(sonarr_id) DO UPDATE SET dismissed_at = excluded.dismissed_at
+                """,
+                (sonarr_id, when.isoformat()),
+            )
+            self._conn.commit()
+
+    def clear_dismissed(self, sonarr_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM dismissed WHERE sonarr_id = ?", (sonarr_id,))
+            self._conn.commit()
+
+    def is_dismissed(self, sonarr_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM dismissed WHERE sonarr_id = ?",
+                (sonarr_id,),
+            ).fetchone()
+        return row is not None
+
+    def dismissed_ids(self) -> set[int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT sonarr_id FROM dismissed").fetchall()
+        return {int(row[0]) for row in rows}
 
     def save_report(self, report: RunReport) -> None:
         self._write(report.to_dict(), report.finished_at)
