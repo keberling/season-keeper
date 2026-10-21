@@ -34,6 +34,7 @@ STORED_FIELDS = (
     "app_token",
     "require_delete_approval",
     "live_series_ids",
+    "new_season_grace_days",
 )
 _CONNECTION_ENV = (
     ("SONARR_URL", "sonarr_url"),
@@ -89,6 +90,7 @@ class Settings(BaseModel):
     monitor_new_items_when_idle: str = "none"
     require_delete_approval: bool = True
     live_series_ids: list[int] = Field(default_factory=list)
+    new_season_grace_days: int | None = None
 
     port: int = Field(default=8787, ge=1, le=65535)
     data_dir: Path = Path("/data")
@@ -101,6 +103,19 @@ class Settings(BaseModel):
     hydrate_limit: int = Field(default=200, ge=0, le=5000)
     run_on_startup: bool = True
     startup_delay_seconds: int = Field(default=10, ge=0, le=3600)
+
+    @field_validator("new_season_grace_days", mode="before")
+    @classmethod
+    def _grace_days(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        try:
+            number = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("New-season grace must be a number of days") from exc
+        if number < 0 or number > 3650:
+            raise ValueError("New-season grace must be between 0 and 3650 days")
+        return number
 
     @field_validator("live_series_ids", mode="before")
     @classmethod
@@ -164,8 +179,8 @@ class Settings(BaseModel):
             raise ValueError("Season numbers must be integers separated by commas") from exc
         if any(number < 0 for number in numbers):
             raise ValueError("Season numbers cannot be negative")
-        # Season 1 is the season this app promises to keep.
-        return numbers | frozenset({1})
+        # Season 1 is always kept. Season 0 is specials and is never kept.
+        return (numbers - frozenset({0})) | frozenset({1})
 
     @property
     def sonarr_base(self) -> str:
@@ -189,6 +204,11 @@ class Settings(BaseModel):
             monitor_new_when_idle=self.monitor_new_items_when_idle,
             require_delete_approval=self.require_delete_approval,
             live_series_ids=frozenset(self.live_series_ids),
+            new_season_grace=timedelta(
+                days=self.watch_window_days
+                if self.new_season_grace_days is None
+                else self.new_season_grace_days
+            ),
         )
 
 
@@ -211,6 +231,7 @@ class SettingsWrite(BaseModel):
     monitor_new_items_when_active: str | None = None
     monitor_new_items_when_idle: str | None = None
     require_delete_approval: bool | None = None
+    new_season_grace_days: int | None = None
     app_token: str = ""
     clear_app_token: bool = False
 
@@ -313,6 +334,9 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         require_delete_approval=current.require_delete_approval
         if update.require_delete_approval is None
         else update.require_delete_approval,
+        new_season_grace_days=current.new_season_grace_days
+        if "new_season_grace_days" not in update.model_fields_set
+        else update.new_season_grace_days,
         app_token=app_token,
     )
     return Settings.model_validate(data)
@@ -363,6 +387,8 @@ def public_settings(settings: Settings) -> dict:
         "monitor_new_items_when_idle": settings.monitor_new_items_when_idle,
         "require_delete_approval": settings.require_delete_approval,
         "live_series_ids": list(settings.live_series_ids),
+        "new_season_grace_days": settings.new_season_grace_days,
+        "new_season_grace_days_effective": settings.policy().new_season_grace.days,
         "app_token_set": bool(settings.app_token),
     }
 
@@ -425,6 +451,7 @@ def _bootstrap_from_env() -> dict | None:
     if approval:
         payload["require_delete_approval"] = approval in {"1", "true", "yes", "on"}
     _take_int(payload, "WATCH_WINDOW_DAYS", "watch_window_days")
+    _take_int(payload, "NEW_SEASON_GRACE_DAYS", "new_season_grace_days")
     _take_int(payload, "WATCH_INTERVAL_MINUTES", "watch_interval_minutes")
     _take_int(payload, "SEARCH_COOLDOWN_HOURS", "search_cooldown_hours")
     for env_name, field in (

@@ -121,7 +121,7 @@ def test_saved_file_beats_a_later_environment(tmp_path, monkeypatch):
     loaded = load_settings()
     assert loaded.configured is True
     assert loaded.dry_run is False
-    assert loaded.keep_season_numbers == frozenset({0, 1})
+    assert loaded.keep_season_numbers == frozenset({1})
     assert (tmp_path / "settings.json").exists()
 
     _quiet_env(monkeypatch)
@@ -301,7 +301,7 @@ def test_admin_api_round_trip_masks_secrets_and_does_not_run(tmp_path, monkeypat
         body = saved.json()
         assert body["configured"] is True
         assert body["dry_run"] is True
-        assert body["keep_seasons_effective"] == [0, 1]
+        assert body["keep_seasons_effective"] == [1]
         assert body["app_token_set"] is True
         assert client.get("/api/settings").status_code == 401
 

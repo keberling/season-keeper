@@ -31,6 +31,8 @@ def episode(
     file_id: int | None = None,
     aired: bool = True,
     file_size: int = 0,
+    file_added_at: datetime | None = None,
+    air_date: datetime | None = None,
 ) -> EpisodeSnapshot:
     return EpisodeSnapshot(
         id=episode_id,
@@ -41,6 +43,8 @@ def episode(
         episode_file_id=file_id,
         aired=aired,
         file_size=file_size,
+        file_added_at=file_added_at,
+        air_date=air_date,
     )
 
 

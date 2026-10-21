@@ -18,7 +18,7 @@ from app.models import (
     ShowWatch,
     WatchIndex,
 )
-from app.policy import decide
+from app.policy import decide, managed_keep, without_specials
 from app.progress import Progress, report
 from app.sonarr import series_update_payload
 from app.state import State
@@ -69,7 +69,7 @@ def watch_for(series: SeriesSnapshot, index: WatchIndex) -> ShowWatch:
 
 def assert_safe(series: SeriesSnapshot, decision: Decision, keep: frozenset[int]) -> None:
     """Refuse deletes and unmonitors that touch a kept season, including season 1."""
-    keep = keep | frozenset({1})
+    keep = managed_keep(keep)
     episodes = {episode.id: episode for episode in series.episodes}
     for episode_id in decision.unmonitor_episode_ids:
         episode = episodes.get(episode_id)
@@ -88,11 +88,15 @@ def assert_safe(series: SeriesSnapshot, decision: Decision, keep: frozenset[int]
         if not seasons:
             raise SafetyError(f"File {file_id} is not on {series.label}")
         kept = seasons & keep
+        if 0 in seasons:
+            raise SafetyError(f"Refusing to delete specials on {series.label}")
         if kept:
             raise SafetyError(
                 f"Refusing to delete file {file_id} on {series.label} because it is also season {sorted(kept)}"
             )
     for season in decision.search_seasons:
+        if season == 0:
+            raise SafetyError(f"Refusing to search specials of {series.label}")
         if season in keep:
             raise SafetyError(f"Refusing to search kept season {season} of {series.label}")
 
@@ -117,7 +121,8 @@ def apply_decision(
     honor_cooldown: bool = True,
     announce_preview: bool = True,
 ) -> SeriesResult:
-    keep = settings.keep_seasons | frozenset({1})
+    decision = without_specials(series, decision)
+    keep = managed_keep(settings.keep_seasons)
     rows, totals = build_inventory(series, keep, decision)
     reason = decision.reason
     searches_ran: list[int] = []
@@ -137,6 +142,8 @@ def apply_decision(
 
     planned: list[int] = []
     for season in decision.search_seasons:
+        if season == 0:
+            continue
         if (series.id, season) in queue or (series.id, season) in running_searches:
             waiting.append(f"season {season} is already queued in Sonarr")
             continue

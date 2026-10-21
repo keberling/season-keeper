@@ -214,9 +214,14 @@
             <p class="hint">A play inside this window keeps the later seasons.</p>
           </label>
           <label class="field">
+            <span>New-season grace (days)</span>
+            <input id="grace" type="number" min="0" max="3650" inputmode="numeric" placeholder="Same as watch window">
+            <p class="hint">Blank uses the watch window. A season added within this many days is held, not deleted.</p>
+          </label>
+          <label class="field">
             <span>Seasons to keep</span>
             <input id="keep" type="text" value="1" autocomplete="off" spellcheck="false" required>
-            <p id="keep-note" class="hint">Season 1 is always kept. Add 0 to keep specials.</p>
+            <p id="keep-note" class="hint">Season 1 is always kept. Specials (season 0) are ignored.</p>
           </label>
         </div>
         <div class="pair">
@@ -363,6 +368,12 @@
       document.getElementById("save").disabled = needsConfirm && !box.checked;
     }
 
+    function graceDays() {
+      const raw = document.getElementById("grace").value.trim();
+      if (!raw) return null;
+      return Number(raw);
+    }
+
     function payload() {
       return {
         sonarr_url: document.getElementById("sonarr-url").value.trim(),
@@ -372,6 +383,7 @@
         dry_run: selectedMode() !== "live",
         require_delete_approval: approvalOn(),
         watch_window_days: Number(document.getElementById("window").value),
+        new_season_grace_days: graceDays(),
         keep_seasons: document.getElementById("keep").value.trim(),
         ignore_tag: document.getElementById("tag").value.trim(),
         watch_interval_minutes: Number(document.getElementById("interval").value),
@@ -401,9 +413,16 @@
       if (mode) mode.checked = true;
       document.getElementById("approval").checked = data.require_delete_approval !== false;
       document.getElementById("window").value = data.watch_window_days;
+      const grace = document.getElementById("grace");
+      if (data.new_season_grace_days == null) {
+        grace.value = "";
+        grace.placeholder = "Same as watch window (" + data.watch_window_days + ")";
+      } else {
+        grace.value = data.new_season_grace_days;
+      }
       document.getElementById("keep").value = data.keep_seasons || "1";
       const kept = (data.keep_seasons_effective || [1]).join(", ");
-      document.getElementById("keep-note").textContent = "Season 1 is always kept. Effective seasons: " + kept + ".";
+      document.getElementById("keep-note").textContent = "Season 1 is always kept. Specials (season 0) are ignored. Effective seasons: " + kept + ".";
       document.getElementById("tag").value = data.ignore_tag || "keep-all";
       document.getElementById("interval").value = data.watch_interval_minutes;
       document.getElementById("cooldown").value = data.search_cooldown_hours;
