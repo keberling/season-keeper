@@ -213,6 +213,80 @@ th { color: var(--faint); font-weight: 650; font-size: 0.75rem; }
 .check { display: flex; gap: 8px; align-items: flex-start; color: var(--text); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+.badge.queued { background: var(--blue-bg); color: var(--blue); }
+.badge.working { background: var(--amber-bg); color: var(--amber); }
+.badge.done { background: var(--green-bg); color: var(--green); }
+.badge.failed, .badge.cancelled { background: var(--red-bg); color: var(--red); }
+
+.queue-wrap { position: relative; }
+.queue-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: min(360px, 80vw);
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+.queue-menu p { margin: 0; }
+.task-row, .queue-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.task-row strong, .queue-row strong { font-weight: 600; }
+.task-row .meta-line, .queue-row .meta-line { grid-column: 1 / -1; margin: 0; }
+
+.library {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+.tasks {
+  position: sticky;
+  top: 92px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  max-height: calc(100vh - 110px);
+  overflow: auto;
+}
+.tasks h2 { margin: 0; font-family: var(--serif); font-size: 1.15rem; }
+.tasks-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tasks.collapsed { display: none; }
+.task-empty { margin: 0; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .library { grid-template-columns: 1fr; }
+  .tasks {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(360px, 100%);
+    max-height: none;
+    z-index: 40;
+    border-radius: 0;
+    transform: translateX(105%);
+  }
+  .tasks.open { transform: none; }
+}
+
 .toast[hidden] { display: none; }
 .toast {
   position: fixed;

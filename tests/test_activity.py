@@ -1,6 +1,7 @@
 """Activity log, cycle sentences, and the stats totals."""
 
 import json
+import time
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -305,6 +306,10 @@ def test_dismiss_is_logged_in_words(tmp_path, monkeypatch):
         )
         dismissed = client.post("/api/series/7/dismiss")
         assert dismissed.status_code == 200
+        assert dismissed.json()["queued"] is True
+        deadline = time.time() + 5
+        while time.time() < deadline and not holder.state.list_activity(kind="dismissed"):
+            time.sleep(0.02)
         rows = holder.state.list_activity(kind="dismissed")
         assert rows[0]["message"] == (
             "Dismissed the deletion request for The Office. The files stay on disk."

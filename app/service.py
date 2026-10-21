@@ -11,9 +11,9 @@ from pathlib import Path
 from app.config import Settings
 from app.engine import apply_decision
 from app.intake import apply_watchlist_marks
-from app.models import RunReport, SeriesResult
+from app.models import RunReport, SeriesResult, ShowWatch
 from app.plex import PlexClient, build_watch_index
-from app.policy import plan_manual_prune, plan_manual_restore
+from app.policy import decide, plan_manual_prune, plan_manual_restore
 from app.progress import Progress, count_phrase, report as report_progress
 from app.sonarr import SonarrClient, parse_series, partition_ignored, series_tag_payload
 from app.state import State
@@ -127,16 +127,19 @@ def _run_cycle(
     apply_watchlist_marks(index, state.watchlist_marks())
     from app.engine import execute
 
+    policy = settings.policy()
+    defer = not settings.dry_run and not policy.require_delete_approval
     report = execute(
         snapshots,
         index,
         sonarr,
         state,
-        settings.policy(),
+        policy,
         now,
         sonarr.queued_seasons(),
         sonarr.running_searches(),
         progress,
+        defer,
     )
     report.results.extend(_ignored_result(row, settings.ignore_tag) for row in ignored)
     return report
@@ -209,6 +212,104 @@ def delete_later_seasons(
     _preserve_watch(state, result)
     state.replace_series(result.to_dict())
     return result
+
+
+class DeleteSkipped(RuntimeError):
+    """The delete must not run. The reason is safe to show on the task."""
+
+
+def execute_queued_delete(
+    settings: Settings,
+    state: State,
+    sonarr: SonarrClient,
+    series_id: int,
+    job: dict,
+    now: datetime | None = None,
+) -> SeriesResult:
+    """Re-read the policy, then delete. A changed show is skipped with a sentence."""
+    moment = now or datetime.now(timezone.utc)
+    source = str((job.get("payload") or {}).get("source") or "user")
+    if settings.dry_run:
+        raise DeleteSkipped("Switched to preview, so this delete was skipped.")
+    if state.deletes_paused():
+        raise DeleteSkipped("Deletes are paused.")
+    if source != "user" and settings.require_delete_approval:
+        raise DeleteSkipped("Approval is on again, so this delete was skipped.")
+    if state.restore_pending(series_id):
+        raise DeleteSkipped("A restore for this show was queued, so the delete was skipped.")
+    try:
+        match = _find_series(sonarr, series_id)
+    except SeriesNotFound:
+        raise DeleteSkipped("Sonarr no longer has this show, so the delete was skipped.") from None
+    tag_id = sonarr.ensure_tag(settings.ignore_tag)
+    tags = [int(tag) for tag in (match.get("tags") or [])]
+    if tag_id in tags:
+        raise DeleteSkipped("This show has the keep tag, so the delete was skipped.")
+    row = _report_row(state, series_id)
+    if row is None:
+        raise DeleteSkipped("This show is not in the latest library read, so the delete was skipped.")
+    series = parse_series(match, sonarr.list_episodes(int(series_id)), moment)
+    watch = _watch_from_report(row)
+    policy = replace(settings.policy(), dry_run=False, require_delete_approval=False)
+    decision = decide(series, watch, moment, policy)
+    if decision.action != "prune":
+        raise DeleteSkipped(_kept_reason(decision.action, decision.reason))
+    if not decision.delete_file_ids:
+        raise DeleteSkipped("Nothing is left to delete.")
+    result = apply_decision(
+        series,
+        decision,
+        watch=watch,
+        actions=sonarr,
+        state=state,
+        settings=policy,
+        now=moment,
+        queue=set(),
+        running_searches=set(),
+        announce_preview=False,
+        confirmed=source == "user",
+    )
+    if result.error:
+        raise RuntimeError(result.error)
+    state.clear_dismissed(series.id)
+    _preserve_watch(state, result)
+    state.replace_series(result.to_dict())
+    return result
+
+
+def _kept_reason(action: str, reason: str) -> str:
+    if action == "restore":
+        return "Someone watched it recently, so the delete was skipped. " + reason
+    if action == "hold":
+        return "This show is protected, so the delete was skipped. " + reason
+    if action == "ignore":
+        return "This show has the keep tag, so the delete was skipped."
+    return "The delete was skipped. " + reason
+
+
+def _watch_from_report(row: dict) -> ShowWatch:
+    return ShowWatch(
+        matched=bool(row.get("plex_matched")),
+        match_source=row.get("match_source"),
+        last_viewed_at=_parse_when(row.get("last_viewed_at")),
+        season1_last_viewed_at=_parse_when(row.get("season1_last_viewed_at")),
+        active_seasons=frozenset(int(number) for number in (row.get("active_seasons") or [])),
+        active_users=(),
+        unknown_season_at=None,
+        history_reliable=True,
+    )
+
+
+def _parse_when(value: object) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def download_later_seasons(

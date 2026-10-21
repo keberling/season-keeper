@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from app.http_retry import request_with_retry
+
 logger = logging.getLogger("trimarr.radarr")
 
 
@@ -65,7 +67,7 @@ class RadarrClient:
         return f"{self.base_url}/{path.lstrip('/')}"
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self._client.request(method, self._url(path), **kwargs)
+        response = request_with_retry(self._client, method, self._url(path), **kwargs)
         if response.status_code >= 400:
             body = response.text[:500]
             raise RadarrError(

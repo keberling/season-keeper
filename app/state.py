@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.models import RunReport, summarize_dicts
+from app.queue_limit import RESTORE_CANCEL, deletion_allowed
 
 
 class State:
@@ -72,6 +73,37 @@ class State:
                 watchlisted_at TEXT NOT NULL,
                 watchlisted_by TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                label TEXT NOT NULL,
+                sonarr_id INTEGER,
+                title TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                dedupe_key TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 1,
+                nbytes INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                not_before TEXT,
+                detail TEXT
+            );
+            CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, id);
+            CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, priority, id);
+            CREATE TABLE IF NOT EXISTS delete_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL,
+                sonarr_id INTEGER NOT NULL,
+                bytes INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS queue_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS cycles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 finished_at TEXT NOT NULL,
@@ -91,6 +123,8 @@ class State:
             """
         )
         self._conn.commit()
+        self._migrate_jobs()
+        self.requeue_interrupted()
 
     def close(self) -> None:
         with self._lock:
@@ -526,3 +560,508 @@ class State:
                 (encoded, updated_at),
             )
             self._conn.commit()
+
+    def _migrate_jobs(self) -> None:
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        additions = {
+            "priority": "INTEGER NOT NULL DEFAULT 1",
+            "nbytes": "INTEGER NOT NULL DEFAULT 0",
+            "attempts": "INTEGER NOT NULL DEFAULT 0",
+            "not_before": "TEXT",
+            "detail": "TEXT",
+        }
+        for name, declaration in additions.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delete_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL,
+                sonarr_id INTEGER NOT NULL,
+                bytes INTEGER NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queue_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.commit()
+
+    def requeue_interrupted(self) -> int:
+        """A restart left these jobs marked running. Put them back without burning an attempt."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued', started_at = NULL, not_before = NULL
+                WHERE status = 'running'
+                """
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def enqueue_job(
+        self,
+        *,
+        created_at: datetime,
+        kind: str,
+        label: str,
+        title: str,
+        dedupe_key: str,
+        sonarr_id: int | None = None,
+        payload: dict | None = None,
+        priority: int = 1,
+        nbytes: int = 0,
+    ) -> tuple[dict, bool]:
+        """Insert a queued job, or return the identical one that is already waiting.
+
+        The second value is True when a new row was inserted. A download cancels
+        any pending delete for the same show.
+        """
+        body = json.dumps(payload or {})
+        with self._lock:
+            if kind == "download-later" and sonarr_id is not None:
+                self._cancel_deletes_locked(int(sonarr_id), created_at, RESTORE_CANCEL)
+            existing = self._conn.execute(
+                f"""
+                SELECT {_JOB_COLUMNS}
+                FROM jobs
+                WHERE dedupe_key = ? AND status = 'queued'
+                ORDER BY id
+                LIMIT 1
+                """,
+                (dedupe_key,),
+            ).fetchone()
+            if existing is not None:
+                if kind == "delete-later" and (payload or {}).get("source") == "user":
+                    self._conn.execute(
+                        "UPDATE jobs SET payload = ?, label = ?, nbytes = ? WHERE id = ?",
+                        (body, label, int(nbytes), int(existing[0])),
+                    )
+                self._conn.commit()
+                reloaded = self._conn.execute(
+                    f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                    (int(existing[0]),),
+                ).fetchone()
+                return _job_dict(reloaded), False
+            cursor = self._conn.execute(
+                """
+                INSERT INTO jobs (
+                    created_at, status, kind, label, sonarr_id, title, payload,
+                    dedupe_key, priority, nbytes, attempts
+                )
+                VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    created_at.isoformat(),
+                    kind,
+                    label,
+                    sonarr_id,
+                    title,
+                    body,
+                    dedupe_key,
+                    int(priority),
+                    int(nbytes),
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        return _job_dict(row), True
+
+    def claim_next_job(
+        self,
+        now: datetime,
+        *,
+        block_deletes: bool = False,
+        block_runs: bool = False,
+        limits: dict | None = None,
+    ) -> dict | None:
+        """Claim the next job. Restores come before deletes. Deletes can be left waiting."""
+        moment = now.isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, kind FROM jobs
+                WHERE status = 'queued' AND (not_before IS NULL OR not_before <= ?)
+                ORDER BY priority ASC, id ASC
+                """,
+                (moment,),
+            ).fetchall()
+            usage = self._deletion_usage_locked(now) if limits else None
+            chosen: int | None = None
+            for row in rows:
+                kind = str(row[1])
+                if kind == "run" and block_runs:
+                    continue
+                if kind == "delete-later":
+                    if block_deletes:
+                        continue
+                    if limits is not None and usage is not None:
+                        allowed, _reason = deletion_allowed(usage, limits, now)
+                        if not allowed:
+                            continue
+                chosen = int(row[0])
+                break
+            if chosen is None:
+                return None
+            cursor = self._conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'running', started_at = ?
+                WHERE id = ? AND status = 'queued'
+                """,
+                (moment, chosen),
+            )
+            self._conn.commit()
+            if cursor.rowcount != 1:
+                return None
+            loaded = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (chosen,),
+            ).fetchone()
+        return _job_dict(loaded)
+
+    def finish_job(
+        self,
+        job_id: int,
+        status: str,
+        now: datetime,
+        error: str | None = None,
+        detail: str | None = None,
+        attempts: int | None = None,
+    ) -> dict | None:
+        """Finish a job that is still running. A recovered job is left alone."""
+        with self._lock:
+            assignments = ["status = ?", "finished_at = ?", "error = ?"]
+            values: list[object] = [status, now.isoformat(), error]
+            if detail is not None:
+                assignments.append("detail = ?")
+                values.append(detail)
+            if attempts is not None:
+                assignments.append("attempts = ?")
+                values.append(int(attempts))
+            values.append(job_id)
+            cursor = self._conn.execute(
+                f"""
+                UPDATE jobs
+                SET {", ".join(assignments)}
+                WHERE id = ? AND status = 'running'
+                """,
+                values,
+            )
+            self._conn.commit()
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _job_dict(row)
+
+    def requeue_job(
+        self,
+        job_id: int,
+        *,
+        attempts: int,
+        not_before: datetime,
+        error: str | None,
+    ) -> dict | None:
+        """Put a running job back on the queue. Used for timeouts, not restarts."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued', started_at = NULL, attempts = ?, not_before = ?, error = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (int(attempts), not_before.isoformat(), error, job_id),
+            )
+            self._conn.commit()
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        return _job_dict(row) if row else None
+
+    def unclaim_job(self, job_id: int) -> None:
+        """A scan is already going. Put this run back without counting an attempt."""
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued', started_at = NULL
+                WHERE id = ? AND status = 'running'
+                """,
+                (job_id,),
+            )
+            self._conn.commit()
+
+    def recover_stuck(self, now: datetime, *, timeout_seconds: int, max_attempts: int) -> list[dict]:
+        """Mark a Working job that outlived its timeout as failed, or queue it again."""
+        cutoff = (now - timedelta(seconds=timeout_seconds)).isoformat()
+        recovered: list[dict] = []
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT {_JOB_COLUMNS} FROM jobs
+                WHERE status = 'running' AND started_at IS NOT NULL AND started_at <= ?
+                """,
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                job = _job_dict(row)
+                attempts = int(job["attempts"]) + 1
+                if attempts >= max_attempts:
+                    self._conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'failed', finished_at = ?, attempts = ?, error = ?
+                        WHERE id = ? AND status = 'running'
+                        """,
+                        (
+                            now.isoformat(),
+                            attempts,
+                            "Timed out after several tries.",
+                            job["id"],
+                        ),
+                    )
+                    job["status"] = "failed"
+                    job["attempts"] = attempts
+                    job["error"] = "Timed out after several tries."
+                else:
+                    self._conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'queued', started_at = NULL, attempts = ?,
+                            not_before = ?, error = ?
+                        WHERE id = ? AND status = 'running'
+                        """,
+                        (
+                            attempts,
+                            now.isoformat(),
+                            "Timed out. It will retry.",
+                            job["id"],
+                        ),
+                    )
+                    job["status"] = "queued"
+                    job["attempts"] = attempts
+                    job["error"] = "Timed out. It will retry."
+                recovered.append(job)
+            if recovered:
+                self._conn.commit()
+        return recovered
+
+    def cancel_job(self, job_id: int, now: datetime) -> dict | None:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'cancelled', finished_at = ?
+                WHERE id = ? AND status = 'queued'
+                """,
+                (now.isoformat(), job_id),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            cancelled = cursor.rowcount == 1
+        if row is None:
+            return None
+        job = _job_dict(row)
+        job["cancelled_now"] = cancelled
+        return job
+
+    def cancel_pending_deletes(self, sonarr_id: int, now: datetime, reason: str) -> int:
+        with self._lock:
+            count = self._cancel_deletes_locked(int(sonarr_id), now, reason)
+            self._conn.commit()
+            return count
+
+    def restore_pending(self, sonarr_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE sonarr_id = ? AND kind = 'download-later'
+                  AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (int(sonarr_id),),
+            ).fetchone()
+        return row is not None
+
+    def run_pending(self) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE kind = 'run' AND status IN ('queued', 'running')
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
+
+    def deletes_paused(self) -> bool:
+        with self._lock:
+            return self._meta_locked("deletes_paused") == "1"
+
+    def set_deletes_paused(self, paused: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO queue_meta (key, value) VALUES ('deletes_paused', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                ("1" if paused else "0",),
+            )
+            self._conn.commit()
+
+    def record_deletion(self, *, at: datetime, sonarr_id: int, nbytes: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO delete_events (at, sonarr_id, bytes) VALUES (?, ?, ?)
+                """,
+                (at.isoformat(), int(sonarr_id), int(nbytes)),
+            )
+            self._conn.commit()
+
+    def deletion_usage(self, now: datetime) -> dict:
+        with self._lock:
+            return self._deletion_usage_locked(now)
+
+    def queue_view(self, recent: int = 20) -> dict:
+        """Pending and running tasks, plus the latest finished ones. Watchlist checks stay internal."""
+        hidden = "kind != 'watchlist'"
+        with self._lock:
+            active = self._conn.execute(
+                f"""
+                SELECT {_JOB_COLUMNS} FROM jobs
+                WHERE status IN ('queued', 'running') AND {hidden}
+                ORDER BY priority ASC, id ASC
+                """
+            ).fetchall()
+            finished = self._conn.execute(
+                f"""
+                SELECT {_JOB_COLUMNS} FROM jobs
+                WHERE status IN ('done', 'failed', 'cancelled') AND {hidden}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (recent,),
+            ).fetchall()
+            counts = self._conn.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
+                FROM jobs
+                WHERE {hidden}
+                """
+            ).fetchone()
+            backlog = self._conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(nbytes), 0) FROM jobs
+                WHERE kind = 'delete-later' AND status = 'queued'
+                """
+            ).fetchone()
+            paused = self._meta_locked("deletes_paused") == "1"
+        jobs = [_job_dict(row) for row in active]
+        jobs.extend(_job_dict(row) for row in finished)
+        return {
+            "queued_count": int(counts[0]),
+            "running_count": int(counts[1]),
+            "deletes_paused": paused,
+            "delete_backlog": {"count": int(backlog[0]), "bytes": int(backlog[1])},
+            "jobs": jobs,
+        }
+
+    def _cancel_deletes_locked(self, sonarr_id: int, now: datetime, reason: str) -> int:
+        cursor = self._conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'cancelled', finished_at = ?, detail = ?
+            WHERE status = 'queued' AND kind = 'delete-later' AND sonarr_id = ?
+            """,
+            (now.isoformat(), reason, sonarr_id),
+        )
+        return int(cursor.rowcount or 0)
+
+    def _meta_locked(self, key: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT value FROM queue_meta WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0])
+
+    def _deletion_usage_locked(self, now: datetime) -> dict:
+        hour = (now - timedelta(hours=1)).isoformat()
+        day = (now - timedelta(days=1)).isoformat()
+        last = self._conn.execute(
+            "SELECT at FROM delete_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        hour_row = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM delete_events WHERE at >= ?",
+            (hour,),
+        ).fetchone()
+        day_row = self._conn.execute(
+            "SELECT COALESCE(SUM(bytes), 0) FROM delete_events WHERE at >= ?",
+            (day,),
+        ).fetchone()
+        return {
+            "last_at": None if last is None else last[0],
+            "hour_series": int(hour_row[0]),
+            "hour_bytes": int(hour_row[1]),
+            "day_bytes": int(day_row[0]),
+        }
+
+
+_JOB_COLUMNS = (
+    "id, created_at, started_at, finished_at, status, kind, label, "
+    "sonarr_id, title, payload, error, dedupe_key, priority, nbytes, "
+    "attempts, not_before, detail"
+)
+
+
+def _job_dict(row: tuple) -> dict:
+    payload = {}
+    try:
+        payload = json.loads(row[9] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "id": int(row[0]),
+        "created_at": row[1],
+        "started_at": row[2],
+        "finished_at": row[3],
+        "status": row[4],
+        "kind": row[5],
+        "label": row[6],
+        "sonarr_id": None if row[7] is None else int(row[7]),
+        "title": row[8],
+        "payload": payload,
+        "error": row[10],
+        "dedupe_key": row[11],
+        "priority": int(row[12] or 0),
+        "nbytes": int(row[13] or 0),
+        "attempts": int(row[14] or 0),
+        "not_before": row[15],
+        "detail": row[16],
+    }

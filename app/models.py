@@ -229,6 +229,7 @@ class SeriesResult:
     dismissed: bool = False
     in_live_scope: bool = False
     protected_seasons: list[int] = field(default_factory=list)
+    queued_delete: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -267,6 +268,7 @@ class SeriesResult:
             "dismissed": self.dismissed,
             "in_live_scope": self.in_live_scope,
             "protected_seasons": list(self.protected_seasons),
+            "queued_delete": self.queued_delete,
         }
 
 
