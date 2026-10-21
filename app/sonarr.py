@@ -84,6 +84,7 @@ def parse_series(raw: dict, episode_rows: list[dict], now: datetime) -> SeriesSn
     if tvdb == 0:
         tvdb = None
     monitor_new = raw.get("monitorNewItems")
+    status = str(raw.get("status") or "").strip().lower() or None
     return SeriesSnapshot(
         id=int(raw["id"]),
         title=str(raw.get("title") or f"Series {raw['id']}"),
@@ -94,6 +95,7 @@ def parse_series(raw: dict, episode_rows: list[dict], now: datetime) -> SeriesSn
         monitor_new_items=str(monitor_new) if monitor_new else None,
         seasons=tuple(sorted(seasons, key=lambda season: season.season_number)),
         episodes=episodes,
+        status=status,
         raw=raw,
     )
 

@@ -493,6 +493,7 @@ def _status_body() -> dict:
         "watch_window_days": settings.watch_window_days,
         "watch_interval_minutes": settings.watch_interval_minutes,
         "keep_seasons": sorted(settings.keep_season_numbers),
+        "keep_current_season": settings.keep_current_season,
         "tag": settings.ignore_tag,
         "ignore_tag": settings.ignore_tag,
         "require_delete_approval": settings.require_delete_approval,

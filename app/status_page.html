@@ -455,9 +455,12 @@
       const days = status ? status.watch_window_days : 90;
       const interval = status ? status.watch_interval_minutes : 15;
       const tag = status ? (status.ignore_tag || status.tag || "keep-all") : "keep-all";
+      const keepCurrent = !status || status.keep_current_season !== false;
       document.getElementById("subtitle").textContent = needsSetup
         ? "Enter Sonarr and Plex on the Admin page. Season 1 stays."
-        : `Season 1 stays. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`;
+        : (keepCurrent
+          ? `Season 1 stays. On a show that is still airing, the current season stays too. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`
+          : `Season 1 stays. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`);
 
       const scopeSentence = ids.length
         ? `Live scope is ${ids.length} show${ids.length === 1 ? "" : "s"}. Every other show stays in preview.`

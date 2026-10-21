@@ -38,6 +38,7 @@ class SeriesSnapshot:
     monitor_new_items: str | None
     seasons: tuple[SeasonSnapshot, ...]
     episodes: tuple[EpisodeSnapshot, ...]
+    status: str | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -107,6 +108,7 @@ class PolicySettings:
     require_delete_approval: bool = True
     live_series_ids: frozenset[int] = field(default_factory=frozenset)
     new_season_grace: timedelta = timedelta(days=90)
+    keep_current_season: bool = True
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,8 @@ class Decision:
     search_seasons: tuple[int, ...]
     bytes_to_free: int
     protected_seasons: tuple[int, ...] = ()
+    kept_seasons: tuple[int, ...] = ()
+    ensure_monitored_seasons: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

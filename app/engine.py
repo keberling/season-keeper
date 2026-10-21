@@ -110,6 +110,43 @@ def _iso(when: datetime | None) -> str | None:
     return when.astimezone(timezone.utc).isoformat()
 
 
+def _apply_keep_monitoring(
+    series: SeriesSnapshot,
+    decision: Decision,
+    actions: SonarrActions,
+) -> bool:
+    """Turn the fresh current season on without unmonitoring or deleting anything else."""
+    seasons = [number for number in decision.ensure_monitored_seasons if number != 0]
+    episode_ids = list(decision.monitor_episode_ids)
+    season_on: dict[int, bool] = {}
+    for number in seasons:
+        current = next((season for season in series.seasons if season.season_number == number), None)
+        if current is None or not current.monitored:
+            season_on[number] = True
+    wrote = False
+    if season_on or (seasons and not series.monitored):
+        actions.update_series(
+            series_update_payload(
+                series.raw,
+                season_monitored=season_on,
+                series_monitored=True,
+                monitor_new_items=None,
+            )
+        )
+        wrote = True
+    if episode_ids:
+        actions.monitor_episodes(episode_ids, True)
+        wrote = True
+    if wrote:
+        label = ", ".join(str(number) for number in seasons) or "current"
+        logger.info(
+            "%s: season %s stays monitored so new episodes can download.",
+            series.label,
+            label,
+        )
+    return wrote
+
+
 def apply_decision(
     series: SeriesSnapshot,
     decision: Decision,
@@ -126,7 +163,7 @@ def apply_decision(
     confirmed: bool = False,
 ) -> SeriesResult:
     decision = without_specials(series, decision)
-    keep = managed_keep(settings.keep_seasons)
+    keep = managed_keep(settings.keep_seasons) | frozenset(decision.kept_seasons)
     rows, totals = build_inventory(series, keep, decision)
     reason = decision.reason
     searches_ran: list[int] = []
@@ -171,7 +208,7 @@ def apply_decision(
     try:
         assert_safe(series, decision, keep)
         if needs_approval:
-            pass
+            _apply_keep_monitoring(series, decision, actions)
         elif not settings.dry_run and decision.action in {"prune", "restore"}:
             if decision.season_monitored is not None:
                 payload = series_update_payload(
@@ -235,6 +272,8 @@ def apply_decision(
                 )
             if waiting:
                 reason = decision.reason + " Waiting: " + "; ".join(waiting) + "."
+        elif not settings.dry_run and _apply_keep_monitoring(series, decision, actions):
+            applied = True
         elif settings.dry_run:
             searches_ran = planned
     except SafetyError as exc:

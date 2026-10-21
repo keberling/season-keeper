@@ -147,6 +147,11 @@
             <p id="keep-note" class="hint">Season 1 is always kept. Specials (season 0) are ignored.</p>
           </label>
         </div>
+        <label class="check">
+          <input id="keep-current" type="checkbox" checked>
+          <span>Keep current season of airing shows</span>
+        </label>
+        <p class="hint">On by default. For a show Sonarr marks as continuing, season 1 and the highest season that has already aired stay while that season's last episode is inside the watch window, or while the new-season grace still covers it, whichever is later. After that it can be removed like any other later season. Specials are never kept. The current season stays monitored so new episodes download.</p>
         <div class="pair">
           <label class="field">
             <span>Ignore tag</span>
@@ -381,6 +386,7 @@
         require_delete_approval: approvalOn(),
         watch_window_days: Number(document.getElementById("window").value),
         new_season_grace_days: graceDays(),
+        keep_current_season: document.getElementById("keep-current").checked,
         keep_seasons: document.getElementById("keep").value.trim(),
         ignore_tag: document.getElementById("tag").value.trim(),
         watch_interval_minutes: Number(document.getElementById("interval").value),
@@ -464,6 +470,7 @@
       } else {
         grace.value = data.new_season_grace_days;
       }
+      document.getElementById("keep-current").checked = data.keep_current_season !== false;
       document.getElementById("keep").value = data.keep_seasons || "1";
       const kept = (data.keep_seasons_effective || [1]).join(", ");
       document.getElementById("keep-note").textContent = "Season 1 is always kept. Specials (season 0) are ignored. Effective seasons: " + kept + ".";

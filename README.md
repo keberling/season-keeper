@@ -1,6 +1,6 @@
 # Trimarr
 
-Trimarr watches every series in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them. A show tagged `keep-all` is left alone by that schedule.
+Trimarr watches every series in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. A show Sonarr still marks as continuing also keeps the season that is airing, until that season's last episode is older than the watch window and the new-season grace has ended. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them. A show tagged `keep-all` is left alone by that schedule.
 
 Open the page at `http://<unraid-ip>:8787`. The first screen asks you to open **Admin** and enter Sonarr and Plex. The schedule stays in preview until you choose **Live** on that page and save. From the library page you can delete the later seasons of one show, check the result, and send that show back to Sonarr to download again.
 
@@ -16,7 +16,7 @@ Every series is included. Tag a show `keep-all` in Sonarr, or press **Ignore** o
 
 Season 1 is never deleted. Add `0` to the keep list on the admin page if you also want to keep specials.
 
-A show is active when Plex has a play of any episode in the last 90 days, or someone is watching it now. An active season 1 play monitors later seasons and searches the ones with missing aired episodes. Any other recent play leaves the files alone. No play in the window, and a complete Plex history, removes the later seasons.
+A show is active when Plex has a play of any episode in the last 90 days, or someone is watching it now. An active season 1 play monitors later seasons and searches the ones with missing aired episodes. Any other recent play leaves the files alone. No play in the window, and a complete Plex history, removes the later seasons. On a continuing show, the highest season that has already aired is kept and stays monitored while its last episode aired inside the watch window, or while that season is still inside the new-season grace. Ended shows do not get that extra season. Specials are ignored.
 
 If a show cannot be matched to Plex, or the Plex history scan stops early, nothing is deleted.
 
