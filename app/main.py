@@ -12,7 +12,7 @@ from pathlib import Path
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import (
@@ -42,6 +42,7 @@ logger = logging.getLogger("season_keeper")
 PAGE = Path(__file__).with_name("status_page.html").read_text(encoding="utf-8")
 ADMIN_PAGE = Path(__file__).with_name("admin_page.html").read_text(encoding="utf-8")
 STATS_PAGE = Path(__file__).with_name("stats_page.html").read_text(encoding="utf-8")
+THEME = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
 NO_STORE = {"Cache-Control": "no-store"}
 _SETUP_REQUIRED = "Save Sonarr and Plex on the admin page first"
 
@@ -289,6 +290,11 @@ def admin() -> HTMLResponse:
 @app.get("/stats", response_class=HTMLResponse)
 def stats_page() -> HTMLResponse:
     return HTMLResponse(STATS_PAGE, headers=NO_STORE)
+
+
+@app.get("/theme.css")
+def theme_css() -> Response:
+    return Response(THEME, media_type="text/css", headers=NO_STORE)
 
 
 @app.get("/api/savings")

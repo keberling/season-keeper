@@ -4,78 +4,55 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Stats — Season Keeper</title>
+  <link rel="stylesheet" href="/theme.css">
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #121410;
-      --bg-raise: #1b1e19;
-      --line: #31362c;
-      --text: #f4f1e8;
-      --muted: #b7bbae;
-      --faint: #8d9284;
-      --amber: #f0b429;
-      --amber-ink: #2a210c;
-      --green: #b7d39a;
-      --green-bg: #243024;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background:
-        radial-gradient(1200px 400px at 10% -10%, rgba(240, 180, 41, 0.08), transparent 50%),
-        var(--bg);
-      color: var(--text);
-      font: 16px/1.45 "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
-    }
-    a { color: var(--amber); }
-    .wrap { width: min(980px, calc(100% - 32px)); margin: 0 auto; }
-    header.top { border-bottom: 1px solid var(--line); background: rgba(18, 20, 16, 0.9); }
-    .top-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 18px 0; }
-    h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.02em; }
-    h2 { font-size: 1rem; margin: 8px 0 0; }
-    .ghost {
-      color: var(--text);
-      text-decoration: none;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 8px 14px;
-    }
-    main { padding: 22px 0 48px; display: grid; gap: 16px; }
-    .note, .card, .event, .cycle, .show-row {
+    .wrap { width: min(1100px, calc(100% - 28px)); }
+    main { padding: 16px 0 48px; display: grid; gap: 14px; }
+    h1 { font-size: 1.35rem; }
+    h2 { font-size: 1.05rem; margin: 4px 0 0; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .card { padding: 12px 14px; }
+    .card span { display: block; color: var(--faint); font-size: 0.75rem; letter-spacing: 0.03em; text-transform: uppercase; }
+    .card strong { display: block; margin-top: 4px; font-size: 1.35rem; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+    .card em { display: block; margin-top: 4px; color: var(--muted); font-style: normal; font-size: 0.8rem; }
+    .chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      min-height: 140px;
+      padding: 12px;
       background: var(--bg-raise);
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
     }
-    .note { padding: 14px 16px; color: var(--muted); }
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-    .card { padding: 16px; }
-    .card span { display: block; color: var(--faint); font-size: 0.82rem; }
-    .card strong { display: block; margin-top: 6px; font-size: 1.45rem; font-variant-numeric: tabular-nums; }
-    .card em { display: block; margin-top: 6px; color: var(--muted); font-style: normal; font-size: 0.88rem; }
-    .meta { color: var(--faint); font-size: 0.88rem; }
-    .chart { display: flex; align-items: flex-end; gap: 6px; min-height: 140px; padding: 12px; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 16px; }
     .bar { flex: 1; min-width: 8px; background: var(--amber); border-radius: 6px 6px 2px 2px; min-height: 4px; }
     .bar.live { background: var(--green); }
-    .events, .cycles, .shows { display: grid; gap: 8px; }
-    .event, .cycle, .show-row { padding: 12px 14px; display: flex; justify-content: space-between; gap: 12px; }
+    .events, .shows { display: grid; gap: 8px; }
+    .event, .show-row {
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
     .event b, .show-row b { font-weight: 650; }
-    .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .filters button, .filters input {
-      background: transparent;
-      color: inherit;
+      background: var(--bg-raise);
+      color: var(--text);
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 8px 12px;
+      padding: 6px 10px;
     }
-    .filters button[aria-pressed="true"] { background: var(--text); color: #16180f; border-color: transparent; }
+    .filters button[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: transparent; }
     .filters input { border-radius: 10px; min-width: 180px; }
-    table { width: 100%; border-collapse: collapse; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--faint); font-weight: 600; font-size: 0.82rem; }
-    [hidden] { display: none !important; }
+    table { background: var(--bg-raise); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
     @media (max-width: 800px) {
       .stats { grid-template-columns: 1fr 1fr; }
-      .top-row, .event, .cycle, .show-row { flex-direction: column; align-items: flex-start; }
+      .top-row, .event, .show-row { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
