@@ -70,7 +70,12 @@ class WatchIndex:
     ambiguous_plays: list[str]
 
     def reliable_for_prune(self) -> bool:
-        return self.history_complete and not self.ambiguous_plays
+        """True when history paging covered the whole watch window.
+
+        Plays with no show id stay in ambiguous_plays. They do not flip this
+        bit, and they are never used as a reason to delete.
+        """
+        return self.history_complete
 
 
 @dataclass(frozen=True)
