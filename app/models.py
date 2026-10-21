@@ -16,6 +16,8 @@ class EpisodeSnapshot:
     episode_file_id: int | None
     aired: bool
     file_size: int = 0
+    file_added_at: datetime | None = None
+    air_date: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ class PolicySettings:
     monitor_new_when_idle: str
     require_delete_approval: bool = True
     live_series_ids: frozenset[int] = field(default_factory=frozenset)
+    new_season_grace: timedelta = timedelta(days=90)
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,7 @@ class Decision:
     delete_seasons: tuple[int, ...]
     search_seasons: tuple[int, ...]
     bytes_to_free: int
+    protected_seasons: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

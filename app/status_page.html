@@ -379,6 +379,9 @@
       if (row.dismissed && row.action === "prune") return ["skip", "Dismissed"];
       if (row.action === "prune") return ["prune", "Would delete"];
       if (row.action === "restore") return ["restore", "Would download"];
+      if (row.action === "hold" && String(row.reason || "").indexOf("protected until") !== -1) {
+        return ["hold", "Held"];
+      }
       if (row.action === "hold") return ["hold", "Watching"];
       if (row.action === "ignore") return ["ignore", "Ignored"];
       return ["skip", "Left alone"];
@@ -690,7 +693,7 @@
     }
 
     function seasonTable(seasons) {
-      const body = (seasons || []).map((season) => `<tr>
+      const body = (seasons || []).filter((season) => Number(season.season_number) !== 0).map((season) => `<tr>
         <td>${esc(seasonName(season.season_number))}</td>
         <td>${season.episode_count}</td>
         <td>${season.file_count}</td>
@@ -728,7 +731,7 @@
           go.textContent = `Delete ${plan.files_targeted} files`;
           go.className = "danger";
         } else {
-          const seasons = (plan.search_seasons || []).map(seasonName).join(", ");
+          const seasons = (plan.search_seasons || []).filter((number) => Number(number) !== 0).map(seasonName).join(", ");
           document.getElementById("modal-copy").textContent = nothing
             ? plan.reason
             : `Sonarr will monitor the later seasons${seasons ? " and search " + seasons : ""}. Your indexers and download client will grab the missing episodes again.`;

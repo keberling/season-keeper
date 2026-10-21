@@ -21,12 +21,15 @@ def test_prune_removes_later_seasons_and_keeps_season_one():
     decision = decide(office(), watch(), NOW, policy())
 
     assert decision.action == "prune"
-    assert decision.delete_file_ids == (21, 22, 31)
+    assert decision.delete_file_ids == (21, 22)
     assert 11 not in decision.delete_file_ids
-    assert decision.delete_seasons == (0, 2)
-    assert decision.bytes_to_free == 5_400
+    assert 31 not in decision.delete_file_ids
+    assert decision.delete_seasons == (2,)
+    assert 0 not in decision.delete_seasons
+    assert decision.bytes_to_free == 5_000
     assert decision.season_monitored[1] is True
     assert decision.season_monitored[2] is False
+    assert decision.season_monitored[0] is False
     assert decision.unmonitor_episode_ids == (2, 3, 4)
     assert 1 not in decision.unmonitor_episode_ids
 
@@ -76,9 +79,11 @@ def test_season_one_play_searches_missing_later_seasons_only():
 
 def test_playing_season_one_on_a_complete_show_leaves_it():
     decision = decide(office(), watch(active_seasons=frozenset({1}), active_users=("Ada",)), NOW, policy())
-    assert decision.action == "skip"
-    assert "Ada" in decision.reason
+    assert decision.action == "restore"
+    assert decision.search_seasons == ()
     assert decision.delete_file_ids == ()
+    assert decision.season_monitored[0] is False
+    assert "Ada" in decision.reason
 
 
 def test_playing_a_later_season_holds():

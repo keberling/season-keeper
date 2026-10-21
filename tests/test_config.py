@@ -9,7 +9,7 @@ def test_season_one_is_always_kept():
         plex_token="token",
         keep_seasons="0",
     )
-    assert settings.keep_season_numbers == frozenset({0, 1})
+    assert settings.keep_season_numbers == frozenset({1})
 
 
 def test_dry_run_defaults_to_preview():

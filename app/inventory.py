@@ -27,7 +27,11 @@ def build_inventory(
     by_season: dict[int, list] = {}
     for episode in series.episodes:
         by_season.setdefault(episode.season_number, []).append(episode)
-    numbers = sorted(set(by_season) | {season.season_number for season in series.seasons})
+    numbers = sorted(
+        number
+        for number in (set(by_season) | {season.season_number for season in series.seasons})
+        if number != 0
+    )
     search = set(decision.search_seasons)
     delete = set(decision.delete_seasons)
     rows: list[SeasonRow] = []
@@ -43,7 +47,9 @@ def build_inventory(
             any(episode.monitored for episode in episodes),
         )
         kept = number in keep
-        if kept:
+        if number in decision.protected_seasons:
+            disposition = "held"
+        elif kept:
             disposition = "keep"
         elif number in search:
             disposition = "download"

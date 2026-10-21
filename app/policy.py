@@ -2,11 +2,16 @@
 
 Rules:
 - Season numbers in keep_seasons (default: season 1) are never deleted.
+- Season 0 (specials) is ignored. It is never monitored, searched, restored,
+  deleted, counted, or kept. When a show is activated, season 0 is set
+  unmonitored in Sonarr.
 - A season 1 play, or a season 1 session, inside the watch window monitors
   every later season and searches the ones with missing aired episodes.
 - Any other play inside the window leaves the files alone.
 - No play inside the window, and a complete Plex history, unmonitors and
   deletes every season that is not kept.
+- A season whose files were added inside the new-season grace period is
+  held. It is not unmonitored or deleted until that period ends.
 - A series that is not matched to Plex is left alone.
 - A history scan that stops before the window is covered leaves every series
   alone. Plays with no show id do not. A title match can only hold a show.
@@ -15,7 +20,7 @@ Rules:
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.human import ago, format_bytes, season_list
 from app.inventory import season_disk_bytes
@@ -28,6 +33,104 @@ def is_recent(when: datetime | None, now: datetime, window: timedelta) -> bool:
     if when > now:
         return True
     return (now - when) <= window
+
+
+def season_arrival(series: SeriesSnapshot, season_number: int) -> datetime | None:
+    """Earliest episode-file dateAdded for a season, or the earliest air date."""
+    episodes = [episode for episode in series.episodes if episode.season_number == season_number]
+    added = [episode.file_added_at for episode in episodes if episode.file_added_at is not None]
+    if added:
+        return min(added)
+    aired = [episode.air_date for episode in episodes if episode.air_date is not None]
+    if aired:
+        return min(aired)
+    return None
+
+
+def protected_arrivals(
+    series: SeriesSnapshot,
+    now: datetime,
+    grace: timedelta,
+    keep: frozenset[int],
+) -> dict[int, datetime]:
+    """Seasons that are too new to unmonitor or delete. Specials are never included."""
+    numbers = {episode.season_number for episode in series.episodes} | {
+        season.season_number for season in series.seasons
+    }
+    found: dict[int, datetime] = {}
+    for number in numbers:
+        if number == 0 or number in keep:
+            continue
+        arrived = season_arrival(series, number)
+        if arrived is not None and is_recent(arrived, now, grace):
+            found[number] = arrived
+    return found
+
+
+def _grace_reason(protected: dict[int, datetime], grace: timedelta) -> str:
+    sentences = []
+    for number, arrived in sorted(protected.items()):
+        added = arrived.astimezone(timezone.utc).date().isoformat()
+        until = (arrived + grace).astimezone(timezone.utc).date().isoformat()
+        sentences.append(f"New season {number} added {added}, protected until {until}.")
+    return " ".join(sentences)
+
+
+def managed_keep(keep: frozenset[int]) -> frozenset[int]:
+    """Season 1 is always kept. Season 0 is specials and is never part of the keep set."""
+    return (keep - frozenset({0})) | frozenset({1})
+
+
+def _specials_ids(series: SeriesSnapshot) -> tuple[set[int], set[int]]:
+    episode_ids = {episode.id for episode in series.episodes if episode.season_number == 0}
+    file_ids = {
+        episode.episode_file_id
+        for episode in series.episodes
+        if episode.season_number == 0 and episode.episode_file_id
+    }
+    return episode_ids, file_ids
+
+
+def has_specials(series: SeriesSnapshot) -> bool:
+    return any(season.season_number == 0 for season in series.seasons) or any(
+        episode.season_number == 0 for episode in series.episodes
+    )
+
+
+def without_specials(series: SeriesSnapshot, decision: Decision) -> Decision:
+    """Drop season 0 from a decision. A series update turns specials off instead."""
+    episode_ids, file_ids = _specials_ids(series)
+    season_monitored = decision.season_monitored
+    unmonitor = [episode_id for episode_id in decision.unmonitor_episode_ids if episode_id not in episode_ids]
+    if season_monitored is not None and has_specials(series):
+        season_monitored = {
+            number: monitored
+            for number, monitored in season_monitored.items()
+            if number != 0
+        }
+        season_monitored[0] = False
+        for episode in series.episodes:
+            if episode.season_number == 0 and episode.monitored and episode.id not in unmonitor:
+                unmonitor.append(episode.id)
+    elif season_monitored is not None:
+        season_monitored = {
+            number: monitored for number, monitored in season_monitored.items() if number != 0
+        }
+    bytes_to_free = decision.bytes_to_free
+    if 0 in decision.delete_seasons:
+        bytes_to_free = max(0, bytes_to_free - season_disk_bytes(series, 0))
+    return replace(
+        decision,
+        season_monitored=season_monitored,
+        monitor_episode_ids=tuple(
+            episode_id for episode_id in decision.monitor_episode_ids if episode_id not in episode_ids
+        ),
+        unmonitor_episode_ids=tuple(dict.fromkeys(unmonitor)),
+        delete_file_ids=tuple(file_id for file_id in decision.delete_file_ids if file_id not in file_ids),
+        delete_seasons=tuple(season for season in decision.delete_seasons if season != 0),
+        search_seasons=tuple(season for season in decision.search_seasons if season != 0),
+        bytes_to_free=bytes_to_free,
+    )
 
 
 def _desired_monitor_new(current: str | None, preference: str) -> str | None:
@@ -45,7 +148,7 @@ def decide(
     settings: PolicySettings,
 ) -> Decision:
     window = settings.watch_window
-    keep = settings.keep_seasons | frozenset({1})
+    keep = managed_keep(settings.keep_seasons)
     days = window.days
 
     if not watch.matched:
@@ -73,7 +176,7 @@ def decide(
             "skip",
             "Plex watch history is incomplete, so later seasons were left in place.",
         )
-    return _prune(series, settings, days)
+    return _prune(series, settings, days, now=now, grace=settings.new_season_grace)
 
 
 def _quiet(action: str, reason: str) -> Decision:
@@ -101,10 +204,14 @@ def _latest_play_has_unknown_season(watch: ShowWatch) -> bool:
 
 
 def _hold(watch: ShowWatch, now: datetime) -> Decision:
-    if watch.active_seasons:
+    numbered = sorted(season for season in watch.active_seasons if season != 0)
+    if numbered:
         who = f" ({', '.join(watch.active_users)})" if watch.active_users else ""
-        playing = season_list(sorted(watch.active_seasons))
+        playing = season_list(numbered)
         reason = f"Season {playing} is playing now{who}. Files were left in place."
+    elif watch.active_seasons:
+        who = f" ({', '.join(watch.active_users)})" if watch.active_users else ""
+        reason = f"A special is playing now{who}. Files were left in place."
     elif _latest_play_has_unknown_season(watch):
         when = watch.unknown_season_at or watch.last_viewed_at
         reason = (
@@ -128,12 +235,23 @@ def _restore(
     settings: PolicySettings,
     keep: frozenset[int],
 ) -> Decision:
-    season_map = {season.season_number: True for season in series.seasons}
+    season_map = {
+        season.season_number: True
+        for season in series.seasons
+        if season.season_number != 0
+    }
     monitor_ids: list[int] = []
+    unmonitor_ids: list[int] = []
     search: list[int] = []
     missing_by_season: dict[int, int] = {}
+    specials_on = False
 
     for episode in series.episodes:
+        if episode.season_number == 0:
+            if episode.monitored:
+                specials_on = True
+                unmonitor_ids.append(episode.id)
+            continue
         if not episode.monitored:
             monitor_ids.append(episode.id)
         if episode.season_number in keep or not episode.aired or episode.has_file:
@@ -150,9 +268,18 @@ def _restore(
     season_change = {
         season.season_number: True
         for season in series.seasons
-        if not season.monitored
+        if season.season_number != 0 and not season.monitored
     }
-    needs_put = bool(season_change) or series_monitored is not None or monitor_new is not None
+    if any(season.season_number == 0 and season.monitored for season in series.seasons):
+        specials_on = True
+    if has_specials(series):
+        season_map[0] = False
+    needs_put = (
+        bool(season_change)
+        or series_monitored is not None
+        or monitor_new is not None
+        or specials_on
+    )
 
     if watch.match_source == "manual":
         lead = "You asked Sonarr to fetch the later seasons."
@@ -171,7 +298,7 @@ def _restore(
         )
 
     parts = [lead]
-    later = [number for number in season_map if number not in keep]
+    later = [number for number in season_map if number != 0 and number not in keep]
     if later and (season_change or monitor_ids):
         parts.append(f"Monitor seasons {season_list(later)}.")
     if search:
@@ -179,36 +306,70 @@ def _restore(
     elif later:
         parts.append("No aired episodes are missing, so Sonarr was not asked to search.")
 
-    return Decision(
-        action="restore",
-        reason=" ".join(parts),
-        season_monitored=season_map if needs_put else None,
-        series_monitored=True if needs_put else None,
-        monitor_new_items=monitor_new if needs_put else None,
-        monitor_episode_ids=tuple(monitor_ids),
-        unmonitor_episode_ids=(),
-        delete_file_ids=(),
-        delete_seasons=(),
-        search_seasons=tuple(search),
-        bytes_to_free=0,
+    return without_specials(
+        series,
+        Decision(
+            action="restore",
+            reason=" ".join(parts),
+            season_monitored=season_map if needs_put else None,
+            series_monitored=True if needs_put else None,
+            monitor_new_items=monitor_new if needs_put else None,
+            monitor_episode_ids=tuple(monitor_ids),
+            unmonitor_episode_ids=tuple(unmonitor_ids),
+            delete_file_ids=(),
+            delete_seasons=(),
+            search_seasons=tuple(search),
+            bytes_to_free=0,
+        ),
     )
 
 
-def _prune(series: SeriesSnapshot, settings: PolicySettings, days: int) -> Decision:
-    keep = settings.keep_seasons | frozenset({1})
-    season_map = {
-        season.season_number: season.season_number in keep for season in series.seasons
+def _prune(
+    series: SeriesSnapshot,
+    settings: PolicySettings,
+    days: int,
+    now: datetime | None = None,
+    grace: timedelta | None = None,
+) -> Decision:
+    keep = managed_keep(settings.keep_seasons)
+    protected = (
+        protected_arrivals(series, now, grace, keep)
+        if now is not None and grace is not None
+        else {}
+    )
+    protected_files = {
+        episode.episode_file_id
+        for episode in series.episodes
+        if episode.season_number in protected and episode.episode_file_id
     }
+    season_map = {
+        season.season_number: season.season_number in keep
+        for season in series.seasons
+        if season.season_number != 0 and season.season_number not in protected
+    }
+    if has_specials(series):
+        season_map[0] = False
     unmonitor_ids = [
         episode.id
         for episode in series.episodes
-        if episode.season_number not in keep and episode.monitored
+        if episode.season_number != 0
+        and episode.season_number not in keep
+        and episode.season_number not in protected
+        and episode.monitored
     ]
     delete_ids: list[int] = []
     seen_files: set[int] = set()
     delete_seasons: set[int] = set()
+    special_files = _specials_ids(series)[1]
     for episode in series.episodes:
-        if episode.season_number in keep or not episode.episode_file_id:
+        if (
+            episode.season_number == 0
+            or episode.season_number in keep
+            or episode.season_number in protected
+            or not episode.episode_file_id
+        ):
+            continue
+        if episode.episode_file_id in special_files or episode.episode_file_id in protected_files:
             continue
         delete_seasons.add(episode.season_number)
         if episode.episode_file_id not in seen_files:
@@ -219,12 +380,15 @@ def _prune(series: SeriesSnapshot, settings: PolicySettings, days: int) -> Decis
     kept_unmonitored = [
         season.season_number
         for season in series.seasons
-        if season.season_number in keep and not season.monitored
+        if season.season_number != 0 and season.season_number in keep and not season.monitored
     ]
     later_still_monitored = [
         season.season_number
         for season in series.seasons
-        if season.season_number not in keep and season.monitored
+        if season.season_number != 0
+        and season.season_number not in keep
+        and season.season_number not in protected
+        and season.monitored
     ]
     monitor_new = _desired_monitor_new(
         series.monitor_new_items, settings.monitor_new_when_idle
@@ -236,6 +400,28 @@ def _prune(series: SeriesSnapshot, settings: PolicySettings, days: int) -> Decis
         or not series.monitored
         or monitor_new is not None
     )
+    if (
+        protected
+        and grace is not None
+        and not unmonitor_ids
+        and not delete_ids
+        and not later_still_monitored
+        and not kept_unmonitored
+    ):
+        return Decision(
+            action="hold",
+            reason=_grace_reason(protected, grace),
+            season_monitored=None,
+            series_monitored=None,
+            monitor_new_items=None,
+            monitor_episode_ids=(),
+            unmonitor_episode_ids=(),
+            delete_file_ids=(),
+            delete_seasons=(),
+            search_seasons=(),
+            bytes_to_free=0,
+            protected_seasons=tuple(sorted(protected)),
+        )
     if not needs_put and not unmonitor_ids and not delete_ids:
         return _quiet(
             "skip",
@@ -255,24 +441,37 @@ def _prune(series: SeriesSnapshot, settings: PolicySettings, days: int) -> Decis
             {
                 episode.season_number
                 for episode in series.episodes
-                if episode.season_number not in keep and episode.monitored
+                if episode.season_number != 0
+                and episode.season_number not in keep
+                and episode.season_number not in protected
+                and episode.monitored
             }
         )
         parts.append(f"Unmonitor seasons {season_list(seasons)}.")
+    if protected and grace is not None:
+        parts.append(_grace_reason(protected, grace))
     parts.append(f"Season {season_list(sorted(keep))} stays.")
 
-    return Decision(
-        action="prune",
-        reason=" ".join(parts),
-        season_monitored=season_map if needs_put else None,
-        series_monitored=True if needs_put else None,
-        monitor_new_items=monitor_new if needs_put else None,
-        monitor_episode_ids=(),
-        unmonitor_episode_ids=tuple(unmonitor_ids),
-        delete_file_ids=tuple(delete_ids),
-        delete_seasons=tuple(sorted(delete_seasons)),
-        search_seasons=(),
-        bytes_to_free=bytes_to_free,
+    if needs_put:
+        for episode in series.episodes:
+            if episode.season_number == 0 and episode.monitored and episode.id not in unmonitor_ids:
+                unmonitor_ids.append(episode.id)
+    return without_specials(
+        series,
+        Decision(
+            action="prune",
+            reason=" ".join(parts),
+            season_monitored=season_map if needs_put else None,
+            series_monitored=True if needs_put else None,
+            monitor_new_items=monitor_new if needs_put else None,
+            monitor_episode_ids=(),
+            unmonitor_episode_ids=tuple(unmonitor_ids),
+            delete_file_ids=tuple(delete_ids),
+            delete_seasons=tuple(sorted(delete_seasons)),
+            search_seasons=(),
+            bytes_to_free=bytes_to_free,
+            protected_seasons=tuple(sorted(protected)),
+        ),
     )
 
 
@@ -300,5 +499,5 @@ def plan_manual_restore(series: SeriesSnapshot, settings: PolicySettings, now: d
         unknown_season_at=None,
         history_reliable=True,
     )
-    keep = settings.keep_seasons | frozenset({1})
+    keep = managed_keep(settings.keep_seasons)
     return _restore(series, watch, now, settings, keep)

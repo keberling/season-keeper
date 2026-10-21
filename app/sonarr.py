@@ -20,14 +20,23 @@ class SonarrError(RuntimeError):
         self.status = status
 
 
+def parse_timestamp(value: object) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def parse_air_date(value: str | None, now: datetime) -> bool:
-    if not value:
+    aired_at = parse_timestamp(value)
+    if aired_at is None:
         return False
-    text = value.replace("Z", "+00:00")
-    aired_at = datetime.fromisoformat(text)
-    if aired_at.tzinfo is None:
-        aired_at = aired_at.replace(tzinfo=timezone.utc)
-    return aired_at.astimezone(timezone.utc) <= now
+    return aired_at <= now.astimezone(timezone.utc)
 
 
 def parse_episode(raw: dict, now: datetime) -> EpisodeSnapshot:
@@ -46,6 +55,8 @@ def parse_episode(raw: dict, now: datetime) -> EpisodeSnapshot:
         episode_file_id=int(file_id) if file_id else None,
         aired=parse_air_date(raw.get("airDateUtc"), now),
         file_size=file_size,
+        file_added_at=parse_timestamp(episode_file.get("dateAdded")),
+        air_date=parse_timestamp(raw.get("airDateUtc")),
     )
 
 
