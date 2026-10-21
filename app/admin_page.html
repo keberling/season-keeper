@@ -181,12 +181,12 @@
             <input type="radio" name="run-mode" value="live">
             <span>
               <strong>Live</strong>
-              <p>On the schedule, an idle tagged show loses later seasons. A season 1 play asks Sonarr to search.</p>
+              <p>On the schedule, every idle show loses later seasons, except shows with the ignore tag. A season 1 play asks Sonarr to search.</p>
             </span>
           </label>
         </div>
         <div id="live-warn" class="warn" hidden>
-          <p>Live deletes later-season files for tagged shows with no play in the watch window, and asks Sonarr to download them again when season 1 is played. Season 1 stays.</p>
+          <p>Live deletes later-season files for every show with no play in the watch window, except shows with the ignore tag, and asks Sonarr to download them again when season 1 is played. Season 1 stays.</p>
           <label class="check" id="live-confirm-row">
             <input id="live-confirm" type="checkbox">
             <span>The schedule may delete later-season files</span>
@@ -206,9 +206,9 @@
         </div>
         <div class="pair">
           <label class="field">
-            <span>Sonarr tag</span>
-            <input id="tag" type="text" value="season-keeper" autocomplete="off" spellcheck="false" required>
-            <p class="hint">Only series with this tag are managed. Season Keeper creates the tag.</p>
+            <span>Ignore tag</span>
+            <input id="tag" type="text" value="keep-all" autocomplete="off" spellcheck="false" required>
+            <p class="hint">Shows with this Sonarr tag are left alone by the schedule. Ignore on a show applies it. Season Keeper creates the tag.</p>
           </label>
           <label class="field">
             <span>Check every (minutes)</span>
@@ -326,7 +326,7 @@
         dry_run: selectedMode() !== "live",
         watch_window_days: Number(document.getElementById("window").value),
         keep_seasons: document.getElementById("keep").value.trim(),
-        sonarr_tag: document.getElementById("tag").value.trim(),
+        ignore_tag: document.getElementById("tag").value.trim(),
         watch_interval_minutes: Number(document.getElementById("interval").value),
         search_cooldown_hours: Number(document.getElementById("cooldown").value),
         monitor_new_items_when_active: document.getElementById("active").value,
@@ -356,7 +356,7 @@
       document.getElementById("keep").value = data.keep_seasons || "1";
       const kept = (data.keep_seasons_effective || [1]).join(", ");
       document.getElementById("keep-note").textContent = "Season 1 is always kept. Effective seasons: " + kept + ".";
-      document.getElementById("tag").value = data.sonarr_tag || "season-keeper";
+      document.getElementById("tag").value = data.ignore_tag || "keep-all";
       document.getElementById("interval").value = data.watch_interval_minutes;
       document.getElementById("cooldown").value = data.search_cooldown_hours;
       document.getElementById("active").value = data.monitor_new_items_when_active || "all";

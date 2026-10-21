@@ -26,6 +26,7 @@ STORED_FIELDS = (
     "watch_window_days",
     "keep_seasons",
     "sonarr_tag",
+    "ignore_tag",
     "watch_interval_minutes",
     "search_cooldown_hours",
     "monitor_new_items_when_active",
@@ -79,6 +80,7 @@ class Settings(BaseModel):
     watch_window_days: int = Field(default=90, ge=1, le=3650)
     keep_seasons: str = "1"
     sonarr_tag: str = Field(default="season-keeper", min_length=1)
+    ignore_tag: str = Field(default="keep-all", min_length=1)
     watch_interval_minutes: int = Field(default=15, ge=5, le=1440)
     search_cooldown_hours: int = Field(default=6, ge=1, le=168)
     monitor_new_items_when_active: str = "all"
@@ -176,6 +178,7 @@ class SettingsWrite(BaseModel):
     watch_window_days: int | None = Field(default=None, ge=1, le=3650)
     keep_seasons: str | None = None
     sonarr_tag: str | None = None
+    ignore_tag: str | None = None
     watch_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     search_cooldown_hours: int | None = Field(default=None, ge=1, le=168)
     monitor_new_items_when_active: str | None = None
@@ -190,6 +193,7 @@ class SettingsWrite(BaseModel):
         "plex_token",
         "keep_seasons",
         "sonarr_tag",
+        "ignore_tag",
         "app_token",
         "monitor_new_items_when_active",
         "monitor_new_items_when_idle",
@@ -249,6 +253,9 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
     tag = current.sonarr_tag if update.sonarr_tag is None else update.sonarr_tag.strip()
     if not tag:
         raise ValueError("Enter a Sonarr tag")
+    ignore = current.ignore_tag if update.ignore_tag is None else update.ignore_tag.strip()
+    if not ignore:
+        raise ValueError("Enter an ignore tag")
     keep = current.keep_seasons if update.keep_seasons is None else update.keep_seasons.strip()
     data = current.model_dump()
     data.update(
@@ -262,6 +269,7 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         else update.watch_window_days,
         keep_seasons=keep,
         sonarr_tag=tag,
+        ignore_tag=ignore,
         watch_interval_minutes=current.watch_interval_minutes
         if update.watch_interval_minutes is None
         else update.watch_interval_minutes,
@@ -317,6 +325,7 @@ def public_settings(settings: Settings) -> dict:
         "keep_seasons": settings.keep_seasons,
         "keep_seasons_effective": sorted(settings.keep_season_numbers),
         "sonarr_tag": settings.sonarr_tag,
+        "ignore_tag": settings.ignore_tag,
         "watch_interval_minutes": settings.watch_interval_minutes,
         "search_cooldown_hours": settings.search_cooldown_hours,
         "monitor_new_items_when_active": settings.monitor_new_items_when_active,
@@ -385,6 +394,7 @@ def _bootstrap_from_env() -> dict | None:
     for env_name, field in (
         ("KEEP_SEASONS", "keep_seasons"),
         ("SONARR_TAG", "sonarr_tag"),
+        ("IGNORE_TAG", "ignore_tag"),
         ("MONITOR_NEW_ITEMS_WHEN_ACTIVE", "monitor_new_items_when_active"),
         ("MONITOR_NEW_ITEMS_WHEN_IDLE", "monitor_new_items_when_idle"),
         ("APP_TOKEN", "app_token"),

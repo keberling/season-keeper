@@ -9,7 +9,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/keberling/season-keeper/issues</Support>
   <Project>https://github.com/keberling/season-keeper</Project>
-  <Overview>Keeps Sonarr series tagged season-keeper down to season 1 unless Plex shows a play in the last 90 days. After the container starts, open the WebUI and use Admin to enter Sonarr and Plex. The schedule stays in preview until you choose Live on that page. Season 1 is always kept. From the library page you can delete later seasons of one show, then ask Sonarr to download them again. Set the restart policy to Unless Stopped. Use the Unraid server IP for Sonarr and Plex. Localhost inside this container is Season Keeper itself.</Overview>
+  <Overview>Keeps every Sonarr series down to season 1 unless Plex shows a play in the last 90 days. A show tagged keep-all is left alone by the schedule, and Ignore on a show applies that tag. After the container starts, open the WebUI and use Admin to enter Sonarr and Plex. The schedule stays in preview until you choose Live on that page. Season 1 is always kept. From the library page you can delete later seasons of one show, then ask Sonarr to download them again. Set the restart policy to Unless Stopped. Use the Unraid server IP for Sonarr and Plex. Localhost inside this container is Season Keeper itself.</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/keberling/season-keeper/main/unraid/my-season-keeper.xml</TemplateURL>

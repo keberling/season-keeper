@@ -97,7 +97,7 @@
       background: var(--amber);
     }
     .warn { border-color: #6a5420; background: #241e12; }
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .stats { display: grid; grid-template-columns: 1.5fr 0.9fr; gap: 10px; }
     .stat {
       background: var(--bg-raise);
       border: 1px solid var(--line);
@@ -105,6 +105,7 @@
       padding: 14px;
       min-height: 104px;
     }
+    .stat.hero strong { font-size: 2.15rem; }
     .stat span { display: block; color: var(--faint); font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; }
     .stat strong {
       display: block;
@@ -132,24 +133,41 @@
       padding: 7px 10px;
     }
     .chips button[aria-pressed="true"] { background: var(--text); color: #16180f; border-color: transparent; }
-    .shows { display: grid; gap: 12px; }
+    .shows {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 10px;
+    }
     article.show {
       background: var(--bg-raise);
       border: 1px solid var(--line);
-      border-left-width: 4px;
-      border-radius: 16px;
-      padding: 16px;
+      border-top: 3px solid #5c6156;
+      border-radius: 14px;
+      padding: 12px;
       display: grid;
-      gap: 14px;
+      gap: 8px;
+      align-content: start;
     }
-    article.show.prune { border-left-color: var(--amber); }
-    article.show.restore { border-left-color: var(--green); }
-    article.show.hold { border-left-color: #7ea8ba; }
-    article.show.skip { border-left-color: #5c6156; }
-    article.show.error { border-left-color: #e15a43; }
-    .show-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-    .show-head h2 { margin: 0; font-size: 1.2rem; letter-spacing: -0.03em; }
-    .reason { margin: 6px 0 0; color: var(--muted); }
+    article.show.prune { border-top-color: var(--amber); }
+    article.show.restore { border-top-color: var(--green); }
+    article.show.hold { border-top-color: #7ea8ba; }
+    article.show.skip, article.show.ignore { border-top-color: #5c6156; }
+    article.show.error { border-top-color: #e15a43; }
+    .show-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .show-head h2 { margin: 0; font-size: 1rem; letter-spacing: -0.02em; line-height: 1.25; }
+    .reason {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.86rem;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .tile-size { margin: 0; font-variant-numeric: tabular-nums; }
+    .tile-size strong { display: block; font-size: 1.35rem; letter-spacing: -0.03em; }
+    .tile-size span { color: var(--faint); font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .tile-size.savings strong { color: var(--amber); }
     .badge {
       flex: 0 0 auto;
       border-radius: 999px;
@@ -162,7 +180,7 @@
     .badge.prune { background: #3a2e14; color: var(--amber); }
     .badge.restore { background: var(--green-bg); color: var(--green); }
     .badge.hold { background: var(--blue-bg); color: var(--blue); }
-    .badge.skip { background: var(--gray-bg); color: var(--muted); }
+    .badge.skip, .badge.ignore { background: var(--gray-bg); color: var(--muted); }
     .badge.error { background: var(--red-bg); color: var(--red); }
     .metrics { display: grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 10px; }
     .metric { background: var(--bg-sunken); border-radius: 12px; padding: 12px; }
@@ -181,7 +199,8 @@
     .bar i.download, .bar i.monitor { background: #7ea8ba; }
     .bar i.leave, .bar i.unmonitor { background: #6d7264; }
     .path { color: var(--faint); margin: 8px 0 0; word-break: break-all; }
-    .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .row-actions button { padding: 7px 9px; font-size: 0.86rem; }
     .meta-line { color: var(--faint); font-size: 0.88rem; }
     .modal[hidden] { display: none; }
     .modal {
@@ -226,11 +245,8 @@
     .token { display: flex; gap: 8px; align-items: center; }
     .token input { background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 180px; }
     @media (max-width: 800px) {
-      .stats, .metrics { grid-template-columns: 1fr 1fr; }
-      .top-row { align-items: flex-start; flex-direction: column; }
-    }
-    @media (max-width: 560px) {
       .stats, .metrics { grid-template-columns: 1fr; }
+      .top-row { align-items: flex-start; flex-direction: column; }
     }
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; scroll-behavior: auto !important; }
@@ -290,16 +306,18 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
   <script>
-    const state = { status: null, filter: "all", query: "", modal: null };
+    const state = { status: null, filter: "matched", query: "", modal: null };
     let pollTimer = null;
     let pollHold = false;
     let pollGen = 0;
     const filters = [
-      ["all", "All"],
+      ["matched", "Matched"],
       ["prune", "Would delete"],
       ["restore", "Would download"],
       ["hold", "Watching"],
-      ["skip", "No change"],
+      ["ignore", "Ignored"],
+      ["skip", "Left alone"],
+      ["all", "All"],
       ["error", "Problems"]
     ];
 
@@ -345,7 +363,16 @@
       if (row.action === "prune") return ["prune", "Would delete"];
       if (row.action === "restore") return ["restore", "Would download"];
       if (row.action === "hold") return ["hold", "Watching"];
-      return ["skip", "No change"];
+      if (row.action === "ignore") return ["ignore", "Ignored"];
+      return ["skip", "Left alone"];
+    }
+
+    function passesFilter(row) {
+      if (state.filter === "all") return true;
+      if (state.filter === "error") return Boolean(row.error);
+      if (row.error) return false;
+      if (state.filter === "matched") return ["prune", "restore", "hold"].includes(row.action);
+      return row.action === state.filter;
     }
 
     function report() {
@@ -487,16 +514,16 @@
 
       const days = status ? status.watch_window_days : 90;
       const interval = status ? status.watch_interval_minutes : 15;
-      const tag = status ? status.tag : "season-keeper";
+      const tag = status ? (status.ignore_tag || status.tag || "keep-all") : "keep-all";
       document.getElementById("subtitle").textContent = needsSetup
-        ? "Enter Sonarr and Plex on the Admin page. Season 1 stays once a show is tagged."
+        ? "Enter Sonarr and Plex on the Admin page. Season 1 stays."
         : `Season 1 stays. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`;
 
       document.getElementById("banner").innerHTML = needsSetup
         ? `<strong>Setup.</strong> Sonarr and Plex are not saved yet. Open <a href="/admin">Admin</a> and enter them there. The schedule does not run, and nothing is deleted, until you save.`
         : (preview
-          ? `<strong>Preview mode.</strong> The schedule reads Sonarr and Plex and changes nothing. The buttons on a show are the only actions that delete files or ask Sonarr to download, and each one asks you to confirm that one show.`
-          : `<strong>Live mode.</strong> Every ${interval} minutes, a tagged show with no play in ${days} days loses every season except season ${esc((status.keep_seasons || [1]).join(", "))}. You can still test one show, or send its later seasons back to Sonarr.`);
+          ? `<strong>Preview mode.</strong> The schedule reads Sonarr and Plex and changes nothing. The buttons on a show are the only actions that delete files or ask Sonarr to download, and each one asks you to confirm that one show. Ignore applies the ${esc(tag)} tag so the schedule skips that show.`
+          : `<strong>Live mode.</strong> Every ${interval} minutes, every show except those tagged ${esc(tag)} with no play in ${days} days loses every season except season ${esc((status.keep_seasons || [1]).join(", "))}. Season 1 stays. A season 1 play asks Sonarr to search.`);
 
       const warnings = document.getElementById("warnings");
       const notes = [];
@@ -512,39 +539,39 @@
 
       const keep = (status && status.keep_seasons) || [1];
       const keptLabel = keep.length === 1 && Number(keep[0]) === 1 ? "Season 1 on disk" : "Kept seasons";
-      const onDisk = (row) => !(row.applied && row.action === "prune");
       const keptBytes = rows.reduce((sum, row) => sum + (Number(row.kept_bytes) || 0), 0);
-      const laterBytes = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_bytes) || 0) : sum, 0);
-      const laterEpisodes = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_episode_count) || 0) : sum, 0);
-      const laterFiles = rows.reduce((sum, row) => onDisk(row) ? sum + (Number(row.later_file_count) || 0) : sum, 0);
       const free = wouldFree(rows);
       const pruneCount = rows.filter((row) => row.action === "prune" && !row.applied && !row.error).length;
+      const matchedCount = rows.filter((row) => !row.error && ["prune", "restore", "hold"].includes(row.action)).length;
       document.getElementById("stats").innerHTML = `
-        <div class="stat"><span>Tagged shows</span><strong>${rows.length}</strong><em>tag: ${esc(tag)}</em></div>
-        <div class="stat"><span>${esc(keptLabel)}</span><strong>${formatBytes(keptBytes)}</strong><em>kept</em></div>
-        <div class="stat savings"><span>Later seasons</span><strong>${formatBytes(laterBytes)}</strong><em>${laterEpisodes} episodes · ${laterFiles} files</em></div>
-        <div class="stat"><span>${preview ? "Rules would free" : "Idle shows would free"}</span><strong>${formatBytes(free)}</strong><em>${pruneCount} show${pruneCount === 1 ? "" : "s"}</em></div>
+        <div class="stat savings hero"><span>Available to save</span><strong>${formatBytes(free)}</strong><em>Would free this much from ${pruneCount} show${pruneCount === 1 ? "" : "s"} the rule would delete. Season 1 stays.</em></div>
+        <div class="stat"><span>${esc(keptLabel)}</span><strong>${formatBytes(keptBytes)}</strong><em>${rows.length} shows · ${matchedCount} matched · ignore tag ${esc(tag)}</em></div>
       `;
 
       const query = state.query.trim().toLowerCase();
       const visible = rows.filter((row) => {
-        if (state.filter === "error") return Boolean(row.error);
-        if (state.filter !== "all" && row.action !== state.filter) return false;
+        if (!passesFilter(row)) return false;
         if (!query) return true;
         return (row.title || "").toLowerCase().includes(query) || String(row.tvdb_id || "").includes(query);
-      }).sort((a, b) => (Number(b.later_bytes) || 0) - (Number(a.later_bytes) || 0));
+      }).sort((a, b) => {
+        const byFree = (Number(b.bytes_to_free) || 0) - (Number(a.bytes_to_free) || 0);
+        if (byFree) return byFree;
+        return (Number(b.later_bytes) || 0) - (Number(a.later_bytes) || 0);
+      });
 
       document.getElementById("showing").textContent = rows.length
-        ? `Showing ${visible.length} of ${rows.length}. Biggest later seasons first. Press / to search.`
+        ? `Showing ${visible.length} of ${rows.length}. Press / to search.`
         : "";
 
       const host = document.getElementById("shows");
       if (needsSetup) {
         host.innerHTML = `<div class="empty"><strong>Add Sonarr and Plex.</strong> Open <a href="/admin">Admin</a> and save the connection details. The schedule stays off until then.</div>`;
       } else if (!current) {
-        host.innerHTML = `<div class="empty"><strong>No preview yet.</strong> Refresh to read tagged series from Sonarr and watch history from Plex.</div>`;
+        host.innerHTML = `<div class="empty"><strong>No preview yet.</strong> Refresh to read every series from Sonarr and watch history from Plex.</div>`;
       } else if (!rows.length) {
-        host.innerHTML = `<div class="empty"><strong>No tagged series.</strong> In Sonarr, edit a show and add the <code>${esc(tag)}</code> tag. Season Keeper creates that tag if it is missing.</div>`;
+        host.innerHTML = `<div class="empty"><strong>No series in Sonarr.</strong> Add a show there, then refresh.</div>`;
+      } else if (!visible.length && state.filter === "matched") {
+        host.innerHTML = `<div class="empty"><strong>No shows match the rule.</strong> Nothing is waiting to be deleted, downloaded, or held for a recent play.</div>`;
       } else if (!visible.length) {
         host.innerHTML = `<div class="empty">Nothing matches this filter.</div>`;
       } else {
@@ -564,56 +591,28 @@
     }
 
     function renderShow(row) {
-      const keep = (state.status && state.status.keep_seasons) || [1];
-      const keptLabel = keep.length === 1 && Number(keep[0]) === 1 ? "Season 1" : "Kept seasons";
       const [kind, label] = badge(row);
       const title = esc(row.title) + (row.year ? ` (${row.year})` : "");
-      const thirdLabel = row.action === "prune" ? (row.applied ? "Freed" : "Would free") : "Later seasons";
-      const thirdValue = row.action === "prune" ? formatBytes(row.bytes_to_free) : formatBytes(row.later_bytes);
-      const thirdNote = row.action === "hold"
-        ? "stays, show was watched"
-        : (row.action === "restore" ? "missing seasons would be searched" : `${row.later_episode_count || 0} episodes`);
-      const total = Math.max(Number(row.size_on_disk) || 0, 1);
-      const seasonRows = (row.seasons || []).map((season) => {
-        const width = Math.max(2, Math.round((Number(season.size_on_disk) || 0) / total * 100));
-        return `<tr>
-          <td>${esc(seasonName(season.season_number))}</td>
-          <td>${season.episode_count}</td>
-          <td>${season.file_count}</td>
-          <td>${formatBytes(season.size_on_disk)}</td>
-          <td>${season.monitored ? "Yes" : "No"}</td>
-          <td>${esc(season.disposition)}</td>
-          <td><div class="bar"><i class="${esc(season.disposition)}" style="width:${width}%"></i></div></td>
-        </tr>`;
-      }).join("");
-      const watched = row.last_viewed_at ? `Last play ${when(row.last_viewed_at)}.` : "No play in the Plex history that was read.";
-      const match = row.plex_matched ? "Plex match" : "No Plex match";
+      const ignored = row.action === "ignore";
+      const sizeKind = row.action === "prune" && !row.error ? "savings" : "";
+      const sizeLabel = ignored ? "Schedule" : (row.action === "prune" ? (row.applied ? "Freed" : "Would free") : "Later seasons");
+      const sizeValue = ignored ? "Kept" : formatBytes(row.action === "prune" ? row.bytes_to_free : row.later_bytes);
+      const ignoreAct = ignored ? "include" : "ignore";
+      const ignoreLabel = ignored ? "Include" : "Ignore";
+      const watched = row.last_viewed_at ? when(row.last_viewed_at) : "";
       return `<article class="show ${kind}">
         <div class="show-head">
-          <div>
-            <h2>${title}</h2>
-            <p class="reason">${esc(row.reason || "")}</p>
-          </div>
+          <h2>${title}</h2>
           <span class="badge ${kind}">${label}</span>
         </div>
-        <div class="metrics">
-          <div class="metric"><span>${esc(keptLabel)}</span><strong>${row.kept_episode_count || 0} ep</strong><small>${row.kept_file_count || 0} files · ${formatBytes(row.kept_bytes)}</small></div>
-          <div class="metric"><span>Later seasons</span><strong>${row.later_episode_count || 0} ep</strong><small>${row.later_file_count || 0} files · ${formatBytes(row.later_bytes)}</small></div>
-          <div class="metric savings"><span>${esc(thirdLabel)}</span><strong>${thirdValue}</strong><small>${esc(thirdNote)}</small></div>
-        </div>
-        <p class="meta-line">${esc(match)} · ${esc(watched)}${row.tvdb_id ? ` · TVDB ${esc(row.tvdb_id)}` : ""}</p>
+        <p class="reason">${esc(row.reason || "")}</p>
+        <p class="tile-size ${sizeKind}"><span>${esc(sizeLabel)}</span><strong>${esc(sizeValue)}</strong></p>
+        <p class="meta-line">${row.kept_episode_count || 0} season 1 ep · ${row.later_episode_count || 0} later${watched ? ` · ${esc(watched)}` : ""}</p>
         ${row.applied ? `<p class="meta-line">This card is the action that just ran. Refresh to read Sonarr again.</p>` : ""}
-        <details class="seasons">
-          <summary>Season by season</summary>
-          <table>
-            <thead><tr><th>Season</th><th>Episodes</th><th>Files</th><th>On disk</th><th>Monitored</th><th>Plan</th><th>Share</th></tr></thead>
-            <tbody>${seasonRows}</tbody>
-          </table>
-          ${row.path ? `<p class="path">${esc(row.path)}</p>` : ""}
-        </details>
         <div class="row-actions">
-          <button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}">Test delete on this show</button>
-          <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}">Download later seasons</button>
+          <button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Delete later</button>
+          <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}" aria-label="Download later seasons">Download</button>
+          <button type="button" class="ghost" data-act="${ignoreAct}" data-id="${row.sonarr_id}">${ignoreLabel}</button>
         </div>
       </article>`;
     }
@@ -747,10 +746,31 @@
       state.filter = filter;
       render();
     });
+    async function setIgnore(ignore, seriesId, button) {
+      button.disabled = true;
+      try {
+        const result = await api(`/api/series/${seriesId}/ignore`, {
+          method: "POST",
+          body: JSON.stringify({ ignore: ignore }),
+        });
+        await load();
+        toast(result.reason || (ignore ? "Ignored." : "Included."));
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    }
+
     document.getElementById("shows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-act]");
       if (!button) return;
-      openModal(button.getAttribute("data-act"), button.getAttribute("data-id"));
+      const act = button.getAttribute("data-act");
+      const seriesId = button.getAttribute("data-id");
+      if (act === "ignore" || act === "include") {
+        setIgnore(act === "ignore", seriesId, button);
+        return;
+      }
+      openModal(act, seriesId);
     });
     document.getElementById("modal-cancel").addEventListener("click", closeModal);
     document.getElementById("modal-check").addEventListener("change", (event) => {

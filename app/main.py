@@ -32,6 +32,7 @@ from app.service import (
     download_later_seasons,
     preview_series,
     run_cycle,
+    set_keep_all,
 )
 from app.sonarr import SonarrClient, SonarrError
 from app.state import State
@@ -59,6 +60,10 @@ holder = Holder()
 
 class ConfirmBody(BaseModel):
     confirm: bool = False
+
+
+class IgnoreBody(BaseModel):
+    ignore: bool = True
 
 
 def configure_logging(level: str) -> None:
@@ -227,9 +232,9 @@ async def lifespan(app: FastAPI):
     if settings.configured:
         mode = "preview only" if settings.dry_run else "live"
         logger.info(
-            "Season Keeper is %s. Tag=%s window=%s days interval=%s minutes",
+            "Season Keeper is %s. Ignore tag=%s window=%s days interval=%s minutes",
             mode,
-            settings.sonarr_tag,
+            settings.ignore_tag,
             settings.watch_window_days,
             settings.watch_interval_minutes,
         )
@@ -276,7 +281,11 @@ def savings() -> JSONResponse:
     assert holder.state is not None
     report = holder.state.load_report()
     series = (report or {}).get("series") or []
-    possible = sum(int(row.get("later_bytes") or 0) for row in series)
+    possible = sum(
+        int(row.get("later_bytes") or 0)
+        for row in series
+        if row.get("action") != "ignore"
+    )
     ready = sum(
         int(row.get("bytes_to_free") or 0)
         for row in series
@@ -311,7 +320,8 @@ def _status_body() -> dict:
         "watch_window_days": settings.watch_window_days,
         "watch_interval_minutes": settings.watch_interval_minutes,
         "keep_seasons": sorted(settings.keep_season_numbers),
-        "tag": settings.sonarr_tag,
+        "tag": settings.ignore_tag,
+        "ignore_tag": settings.ignore_tag,
         "running": holder.running,
         "progress": holder.progress.snapshot() if holder.running else None,
         "next_run_at": next_run,
@@ -344,9 +354,9 @@ def write_settings(body: SettingsWrite, request: Request) -> JSONResponse:
     holder.settings = updated
     _arm_schedule(updated, first=not was_configured)
     logger.info(
-        "Saved settings. mode=%s tag=%s window=%s days interval=%s minutes",
+        "Saved settings. mode=%s ignore_tag=%s window=%s days interval=%s minutes",
         "preview" if updated.dry_run else "live",
-        updated.sonarr_tag,
+        updated.ignore_tag,
         updated.watch_window_days,
         updated.watch_interval_minutes,
     )
@@ -439,6 +449,34 @@ def delete_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
 @app.post("/api/series/{series_id}/download-later")
 def download_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
     return _manual(request, series_id, body, download_later_seasons)
+
+
+@app.post("/api/series/{series_id}/ignore")
+def ignore_one(series_id: int, body: IgnoreBody, request: Request) -> dict:
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    assert holder.state is not None
+    if not holder.lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A run is already in progress")
+    holder.running = True
+    holder.progress.update("Reading this show from Sonarr.")
+    sonarr = None
+    try:
+        sonarr = SonarrClient(
+            settings.sonarr_base, settings.sonarr_api_key, settings.http_timeout_seconds
+        )
+        return set_keep_all(settings, holder.state, sonarr, series_id, body.ignore)
+    except SeriesNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SonarrError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+        holder.progress.clear()
+        holder.running = False
+        holder.lock.release()
 
 
 def main() -> None:

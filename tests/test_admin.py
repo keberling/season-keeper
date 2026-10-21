@@ -22,6 +22,7 @@ _ENV = [
     "WATCH_WINDOW_DAYS",
     "KEEP_SEASONS",
     "SONARR_TAG",
+    "IGNORE_TAG",
     "WATCH_INTERVAL_MINUTES",
     "SEARCH_COOLDOWN_HOURS",
     "MONITOR_NEW_ITEMS_WHEN_ACTIVE",
@@ -49,6 +50,51 @@ def _connected(**overrides) -> Settings:
     )
     values.update(overrides)
     return Settings(**values)
+
+
+def test_old_opt_in_tag_is_not_reused_as_the_ignore_list(tmp_path, monkeypatch):
+    _quiet_env(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "sonarr_url": "http://sonarr.local:8989",
+                "sonarr_api_key": "secret-key-value",
+                "plex_url": "http://plex.local:32400",
+                "plex_token": "plex-token-value",
+                "sonarr_tag": "season-keeper",
+                "dry_run": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_settings()
+    assert loaded.sonarr_tag == "season-keeper"
+    assert loaded.ignore_tag == "keep-all"
+    assert public_settings(loaded)["ignore_tag"] == "keep-all"
+    renamed = apply_update(
+        loaded,
+        SettingsWrite(
+            sonarr_url="http://sonarr.local:8989",
+            plex_url="http://plex.local:32400",
+            ignore_tag="archive",
+        ),
+    )
+    assert renamed.ignore_tag == "archive"
+    assert renamed.sonarr_tag == "season-keeper"
+    try:
+        apply_update(
+            renamed,
+            SettingsWrite(
+                sonarr_url="http://sonarr.local:8989",
+                plex_url="http://plex.local:32400",
+                ignore_tag="  ",
+            ),
+        )
+    except ValueError as exc:
+        assert "ignore tag" in str(exc)
+    else:
+        raise AssertionError("expected an empty ignore tag to be rejected")
 
 
 def test_blank_install_stays_in_preview(tmp_path, monkeypatch):

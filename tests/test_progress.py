@@ -54,6 +54,7 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
             return "4.0.0"
 
         def ensure_tag(self, label):
+            assert label == "keep-all"
             return 9
 
         def list_series(self):
@@ -61,7 +62,7 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
                 {
                     "id": 1,
                     "title": "The Office",
-                    "tags": [9],
+                    "tags": [],
                     "tvdbId": 73244,
                     "monitored": True,
                     "seasons": [{"seasonNumber": 1, "monitored": True}],
@@ -69,12 +70,13 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
                 {
                     "id": 2,
                     "title": "Parks and Recreation",
-                    "tags": [9],
+                    "tags": [],
                     "tvdbId": 111,
                     "monitored": True,
                     "seasons": [{"seasonNumber": 1, "monitored": True}],
                 },
                 {"id": 3, "title": "Untagged", "tags": [], "seasons": []},
+                {"id": 4, "title": "Archived", "tags": [9], "seasons": []},
             ]
 
         def list_episodes(self, series_id):
@@ -168,13 +170,15 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
         transport.close()
         original_client.close()
 
-    assert [row[0] for row in episode_seen] == [1, 2]
-    assert episode_seen[0][1]["message"] == "Sonarr episodes, 1 of 2: The Office."
+    assert [row[0] for row in episode_seen] == [1, 2, 3]
+    assert episode_seen[0][1]["message"] == "Sonarr episodes, 1 of 3: The Office."
     assert episode_seen[0][1]["done"] == 1
-    assert episode_seen[0][1]["total"] == 2
-    assert episode_seen[1][1]["message"] == "Sonarr episodes, 2 of 2: Parks and Recreation."
+    assert episode_seen[0][1]["total"] == 3
+    assert episode_seen[1][1]["message"] == "Sonarr episodes, 2 of 3: Parks and Recreation."
+    assert episode_seen[2][1]["message"] == "Sonarr episodes, 3 of 3: Untagged."
     messages = [item[0] for item in seen]
     assert messages[0] == "Checking Sonarr and Plex."
+    assert "Skipping 1 show tagged keep-all." in messages
     assert 'Plex library "TV Shows", 0 shows so far.' in messages
     assert 'Plex library "TV Shows", 2 shows so far.' in messages
     assert 'Plex library "Anime", 2 shows so far.' in messages
@@ -182,15 +186,19 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
     assert "Plex history, 2 plays inside the 90-day window." in messages
     assert "Plex history, 3 plays inside the 90-day window." in messages
     assert "Filling in play details, 1 lookup." in messages
-    assert messages[-2:] == ["Checking shows, 1 of 2.", "Checking shows, 2 of 2."]
-    assert seen[-1] == ("Checking shows, 2 of 2.", 2, 2)
+    assert messages[-2:] == ["Checking shows, 2 of 3.", "Checking shows, 3 of 3."]
+    assert seen[-1] == ("Checking shows, 3 of 3.", 3, 3)
     assert ("/library/sections/2/all", 'Plex library "TV Shows", 0 shows so far.') in during
     assert ("/library/sections/3/all", 'Plex library "Anime", 2 shows so far.') in during
     history_hits = [message for path, message in during if path == "/status/sessions/history/all"]
     assert "Plex history, 2 plays inside the 90-day window." in history_hits
     assert all(TOKEN not in message for message in messages)
     assert report.error is None
-    assert len(report.results) == 2
+    assert len(report.results) == 4
+    ignored = [result for result in report.results if result.action == "ignore"]
+    assert [result.title for result in ignored] == ["Archived"]
+    assert ignored[0].bytes_to_free == 0
+    assert ignored[0].later_bytes == 0
 
 
 def test_status_hides_progress_when_idle(tmp_path, monkeypatch):

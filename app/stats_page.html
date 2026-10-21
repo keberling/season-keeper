@@ -76,7 +76,7 @@
   <main class="wrap">
     <p class="note">Possible and ready numbers come from the last Sonarr scan. They are the size Sonarr reports for the episode files in the show folders. A hardlinked download still occupies that space, so deleting the show-folder name does not always free the disk. Removed totals count live deletes Season Keeper has finished. Preview runs are not counted.</p>
     <section class="stats">
-      <article class="card"><span>Possible</span><strong id="possible">—</strong><em>Later seasons across tagged shows</em></article>
+      <article class="card"><span>Possible</span><strong id="possible">—</strong><em>Later seasons the rule can change</em></article>
       <article class="card"><span>Ready now</span><strong id="ready">—</strong><em>Quiet shows the last scan would remove</em></article>
       <article class="card"><span>Removed</span><strong id="freed">—</strong><em id="freed-note">From show folders, since this page started recording</em></article>
     </section>
@@ -112,7 +112,7 @@
       document.getElementById("ready").textContent = formatBytes(body.ready_bytes);
       document.getElementById("freed").textContent = formatBytes(body.freed_bytes);
       document.getElementById("scanned").textContent = body.scanned_at
-        ? `Last scan ${when(body.scanned_at)}. ${body.series_count} tagged show${body.series_count === 1 ? "" : "s"}.`
+        ? `Last scan ${when(body.scanned_at)}. ${body.series_count} show${body.series_count === 1 ? "" : "s"} in the last scan.`
         : "No scan yet. Refresh the library preview to fill the possible and ready totals.";
       const host = document.getElementById("events");
       const events = body.events || [];

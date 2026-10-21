@@ -116,6 +116,21 @@ def series_update_payload(
     return payload
 
 
+def series_tag_payload(raw: dict, tags: list[int]) -> dict:
+    """Copy a Sonarr series and change only its tags.
+
+    Season and series monitored flags stay as Sonarr sent them.
+    """
+    payload = copy.deepcopy(raw)
+    for key in ("statistics", "previousAiring", "nextAiring", "episodesChanged"):
+        payload.pop(key, None)
+    payload["tags"] = [int(tag) for tag in tags]
+    for season in payload.get("seasons") or []:
+        season.pop("statistics", None)
+        season.pop("images", None)
+    return payload
+
+
 def select_tagged(series_rows: list[dict], tag_id: int) -> list[dict]:
     selected = []
     for row in series_rows:
@@ -123,6 +138,18 @@ def select_tagged(series_rows: list[dict], tag_id: int) -> list[dict]:
         if tag_id in tags:
             selected.append(row)
     return selected
+
+
+def partition_ignored(series_rows: list[dict], tag_id: int) -> tuple[list[dict], list[dict]]:
+    managed: list[dict] = []
+    ignored: list[dict] = []
+    for row in series_rows:
+        tags = row.get("tags") or []
+        if tag_id in tags:
+            ignored.append(row)
+        else:
+            managed.append(row)
+    return managed, ignored
 
 
 class SonarrClient:

@@ -267,7 +267,10 @@ def test_page_has_the_preview_and_one_show_actions():
         "Download later seasons",
         "Season 1",
         "Would free",
+        "Available to save",
+        "Ignore",
         "delete-later",
         "download-later",
+        "/ignore",
     ):
         assert text in page

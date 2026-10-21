@@ -1,23 +1,18 @@
 # Season Keeper
 
-Season Keeper watches series you tag in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them.
+Season Keeper watches every series in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them. A show tagged `keep-all` is left alone by that schedule.
 
 Open the page at `http://<unraid-ip>:8787`. The first screen asks you to open **Admin** and enter Sonarr and Plex. The schedule stays in preview until you choose **Live** on that page and save. From the library page you can delete the later seasons of one show, check the result, and send that show back to Sonarr to download again.
 
 ## What the page shows
 
-Each tagged show has:
+The library opens on the shows the rule matched. Each tile has the plan, the space a delete would free, and buttons for that one show. The season-by-season table is in the confirm dialog.
 
-- Season 1 episode count, file count, and size
-- Later-season episode count, file count, and size
-- The space a delete would free
-- A season-by-season table
-
-The totals at the top are the whole tagged library. "Rules would free" is only the shows the 90-day rule would actually remove. A show that was played inside the window stays, and its size is still listed on the card.
+**Available to save** is the space the rule would free by deleting later seasons. Season 1 stays. A show that was played inside the window stays, and it is listed under Watching.
 
 ## Rules
 
-Only series with the Sonarr tag `season-keeper` are managed. The app creates that tag.
+Every series is included. Tag a show `keep-all` in Sonarr, or press **Ignore** on its tile, and the schedule will not delete or download it. **Include** removes that tag. The app creates the tag. The name can be changed on the Admin page. Delete and Download on a tile still run when you confirm them, including on an ignored show.
 
 Season 1 is never deleted. Add `0` to the keep list on the admin page if you also want to keep specials.
 
@@ -38,8 +33,7 @@ Plex on Unraid is often on the host network, and Sonarr is often on a bridge por
 3. Set the restart policy to Unless Stopped. Apply.
 4. Open the WebUI. On Admin, enter the Sonarr URL and API key, and the Plex URL and server-owner token. Leave **Preview** selected. Save.
 5. Press **Test connection**. Both sides should report OK.
-6. In Sonarr, edit a series and add the tag `season-keeper`.
-7. Open the library page and press **Refresh preview**.
+6. Open the library page and press **Refresh preview**. To leave a show out of the schedule, press **Ignore** on its tile, or add the `keep-all` tag in Sonarr.
 
 Sonarr's API key is under Settings, General. The Plex token has to be the server owner's token so the server history includes every account.
 
@@ -57,17 +51,17 @@ If this container already has Sonarr and Plex in its environment from an earlier
 
 Preview mode does not stop you from testing a single series.
 
-1. Open the show and read the episode counts and sizes.
-2. Press **Test delete on this show**.
+1. Open the show's tile and read the space it would free.
+2. Press **Delete later**.
 3. The dialog lists every season, including season 1, and the plan for each one. Check the box and confirm.
 4. Sonarr unmonitors the later seasons and deletes those episode files. Season 1 stays.
-5. Press **Download later seasons**. Confirm again. Sonarr monitors those seasons and searches for the missing aired episodes. Your existing indexers and download client do the downloading.
+5. Press **Download**. Confirm again. Sonarr monitors those seasons and searches for the missing aired episodes. Your existing indexers and download client do the downloading.
 
 The schedule will not repeat that delete while the admin page is set to Preview.
 
 ## Turn the schedule on
 
-When the preview looks right, open **Admin**, choose **Live**, check the confirm box, and save. The library banner switches from Preview to Live. The next scheduled read can delete later seasons of idle tagged shows and ask Sonarr to search when season 1 is played.
+When the preview looks right, open **Admin**, choose **Live**, check the confirm box, and save. The library banner switches from Preview to Live. The next scheduled read can delete later seasons of every idle show except those tagged `keep-all`, and ask Sonarr to search when season 1 is played.
 
 Choose **Preview** and save again to stop the schedule from changing Sonarr.
 
@@ -96,7 +90,7 @@ The number on the left is the TVDB id from Sonarr. The number on the right is th
 | Preview / Live | Preview | Preview reads the libraries and changes nothing on the schedule |
 | Watch window | 90 days | How long a play keeps the later seasons |
 | Seasons to keep | 1 | Seasons that are never deleted. Season 1 is always included |
-| Sonarr tag | season-keeper | Sonarr tag that opts a series in |
+| Ignore tag | keep-all | Sonarr tag that keeps a show out of the schedule |
 | Check every | 15 minutes | How often the schedule runs |
 | Search cooldown | 6 hours | Minimum time between searches of the same season |
 | Monitor new items while active | all | Sonarr's new-item setting while the show is active. `keep` leaves it alone |
