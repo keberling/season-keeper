@@ -30,6 +30,14 @@ class State:
                 payload TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS freed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                freed_at TEXT NOT NULL,
+                sonarr_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                file_count INTEGER NOT NULL,
+                bytes INTEGER NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -69,6 +77,46 @@ class State:
                 (series_id, season, now.isoformat()),
             )
             self._conn.commit()
+
+    def record_freed(
+        self,
+        *,
+        sonarr_id: int,
+        title: str,
+        file_count: int,
+        nbytes: int,
+        when: datetime,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO freed (freed_at, sonarr_id, title, file_count, bytes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (when.isoformat(), sonarr_id, title, file_count, nbytes),
+            )
+            self._conn.commit()
+
+    def freed_events(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT freed_at, sonarr_id, title, file_count, bytes
+                FROM freed
+                ORDER BY id DESC
+                LIMIT 200
+                """
+            ).fetchall()
+        return [
+            {
+                "freed_at": freed_at,
+                "sonarr_id": sonarr_id,
+                "title": title,
+                "file_count": file_count,
+                "bytes": nbytes,
+            }
+            for freed_at, sonarr_id, title, file_count, nbytes in rows
+        ]
 
     def save_report(self, report: RunReport) -> None:
         self._write(report.to_dict(), report.finished_at)

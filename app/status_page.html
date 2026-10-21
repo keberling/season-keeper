@@ -82,6 +82,20 @@
       background: var(--bg-raise);
     }
     .banner strong { font-weight: 650; }
+    .progress { display: grid; gap: 10px; }
+    .progress-text { margin: 0; font-variant-numeric: tabular-nums; }
+    .progress-track {
+      height: 6px;
+      background: #2c3128;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-track i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--amber);
+    }
     .warn { border-color: #6a5420; background: #241e12; }
     .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
     .stat {
@@ -232,6 +246,7 @@
       </div>
       <div class="top-actions">
         <span id="mode" class="mode preview">Preview</span>
+        <a class="ghost" href="/stats">Savings</a>
         <a class="ghost" href="/admin">Admin</a>
         <button id="refresh" class="primary" type="button">Refresh preview</button>
       </div>
@@ -239,6 +254,10 @@
   </header>
   <main class="wrap">
     <section id="banner" class="banner"></section>
+    <section id="progress" class="banner progress" hidden>
+      <p id="progress-text" class="progress-text"></p>
+      <div id="progress-bar" class="progress-track" hidden><i id="progress-fill"></i></div>
+    </section>
     <section id="warnings"></section>
     <section id="stats" class="stats"></section>
     <div class="toolbar" id="tools">
@@ -272,6 +291,9 @@
   <div id="toast" class="toast" role="status" hidden></div>
   <script>
     const state = { status: null, filter: "all", query: "", modal: null };
+    let pollTimer = null;
+    let pollHold = false;
+    let pollGen = 0;
     const filters = [
       ["all", "All"],
       ["prune", "Would delete"],
@@ -382,6 +404,72 @@
       }).join("");
     }
 
+    function renderProgress() {
+      const box = document.getElementById("progress");
+      const status = state.status;
+      const running = Boolean(status && status.running);
+      if (!running) {
+        box.hidden = true;
+        return;
+      }
+      const progress = status.progress;
+      const message = progress && progress.message ? progress.message : "Reading libraries…";
+      document.getElementById("progress-text").textContent = message;
+      const track = document.getElementById("progress-bar");
+      const fill = document.getElementById("progress-fill");
+      const total = progress && typeof progress.total === "number" && progress.total > 0
+        ? progress.total
+        : null;
+      if (total) {
+        const done = Math.max(0, Number(progress.done) || 0);
+        const pct = Math.max(0, Math.min(100, (done / total) * 100));
+        fill.style.width = pct + "%";
+        track.hidden = false;
+      } else {
+        track.hidden = true;
+      }
+      box.hidden = false;
+    }
+
+    function ensurePoll() {
+      if (pollTimer) return;
+      pollTimer = setInterval(pollOnce, 1000);
+    }
+
+    function stopPoll() {
+      pollGen += 1;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function pollOnce() {
+      const gen = pollGen;
+      try {
+        const next = await api("/api/status");
+        if (gen !== pollGen) return;
+        if (pollHold && !next.running) return;
+        const finished = Boolean(state.status && state.status.running) && !next.running;
+        state.status = next;
+        if (finished) {
+          render();
+          if (!pollHold) stopPoll();
+          return;
+        }
+        renderProgress();
+        const button = document.getElementById("refresh");
+        const needsSetup = next.configured === false;
+        button.textContent = needsSetup
+          ? "Open admin"
+          : (next.running ? "Reading libraries…" : (next.dry_run ? "Refresh preview" : "Run now"));
+        button.disabled = !needsSetup && Boolean(next.running);
+        if (!next.running && !pollHold) stopPoll();
+      } catch (error) {
+        // The next poll tries again.
+      }
+    }
+
     function render() {
       const status = state.status;
       const rows = seriesRows();
@@ -391,9 +479,11 @@
       const mode = document.getElementById("mode");
       mode.textContent = needsSetup ? "Setup" : (preview ? "Preview" : "Live");
       mode.className = "mode " + (needsSetup || preview ? "preview" : "live");
-      document.getElementById("refresh").textContent = needsSetup
+      const refreshButton = document.getElementById("refresh");
+      refreshButton.textContent = needsSetup
         ? "Open admin"
         : (status && status.running ? "Reading libraries…" : (preview ? "Refresh preview" : "Run now"));
+      refreshButton.disabled = !needsSetup && Boolean(status && status.running);
 
       const days = status ? status.watch_window_days : 90;
       const interval = status ? status.watch_interval_minutes : 15;
@@ -470,6 +560,7 @@
       document.getElementById("tools").hidden = needsSetup;
       document.getElementById("showing").hidden = needsSetup;
       renderChips();
+      renderProgress();
     }
 
     function renderShow(row) {
@@ -561,7 +652,7 @@
         if (action === "delete") {
           document.getElementById("modal-copy").textContent = nothing
             ? plan.reason
-            : `This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} in the later seasons and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again.`;
+            : `This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} in the later seasons and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again. If those files are hardlinked to a download that is still seeding, Sonarr can link that same data back into the season folder, and the disk space stays used until that download is gone too.`;
           document.getElementById("modal-check-label").textContent = "Delete these episode files now. Season 1 stays.";
           go.textContent = `Delete ${plan.files_targeted} files`;
           go.className = "danger";
@@ -610,6 +701,7 @@
     async function load() {
       state.status = await api("/api/status");
       render();
+      if (state.status && state.status.running) ensurePoll();
     }
 
     async function refresh() {
@@ -619,7 +711,13 @@
       }
       const button = document.getElementById("refresh");
       button.disabled = true;
-      button.textContent = "Reading libraries…";
+      state.status = Object.assign({}, state.status, {
+        running: true,
+        progress: { message: "Checking Sonarr and Plex.", done: 0, total: null },
+      });
+      render();
+      pollHold = true;
+      ensurePoll();
       try {
         state.status = await api("/api/run", { method: "POST", body: "{}" });
         render();
@@ -628,8 +726,12 @@
         else toast("Preview updated.");
       } catch (error) {
         toast(error.message);
+        try {
+          state.status = await api("/api/status");
+        } catch { /* Keep the last status the page already showed. */ }
       } finally {
-        button.disabled = false;
+        pollHold = false;
+        if (!state.status || !state.status.running) stopPoll();
         render();
       }
     }

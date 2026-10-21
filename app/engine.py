@@ -18,6 +18,7 @@ from app.models import (
     WatchIndex,
 )
 from app.policy import decide
+from app.progress import Progress, report
 from app.sonarr import series_update_payload
 from app.state import State
 
@@ -177,6 +178,13 @@ def apply_decision(
                 searches_ran.append(season)
             applied = True
             if decision.delete_file_ids:
+                state.record_freed(
+                    sonarr_id=series.id,
+                    title=series.title,
+                    file_count=len(decision.delete_file_ids),
+                    nbytes=decision.bytes_to_free,
+                    when=now,
+                )
                 logger.info(
                     "Deleted %s episode file(s) for %s",
                     len(decision.delete_file_ids),
@@ -241,10 +249,15 @@ def execute(
     now: datetime,
     queue: set[tuple[int, int]],
     running_searches: set[tuple[int, int]],
+    progress: Progress | None = None,
 ) -> RunReport:
     started = now
     results: list[SeriesResult] = []
-    for series in series_list:
+    total = len(series_list)
+    if total == 0:
+        report(progress, "Checking shows, 0 of 0.", done=0, total=0)
+    for index_number, series in enumerate(series_list, start=1):
+        report(progress, f"Checking shows, {index_number} of {total}.", done=index_number, total=total)
         watch = watch_for(series, index)
         decision = decide(series, watch, now, settings)
         results.append(

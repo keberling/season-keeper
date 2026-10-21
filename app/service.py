@@ -13,6 +13,7 @@ from app.engine import apply_decision
 from app.models import RunReport, SeriesResult
 from app.plex import PlexClient, build_watch_index
 from app.policy import plan_manual_prune, plan_manual_restore
+from app.progress import Progress, report as report_progress
 from app.sonarr import SonarrClient, parse_series, select_tagged
 from app.state import State
 
@@ -45,11 +46,12 @@ def run_cycle(
     sonarr: SonarrClient,
     plex: PlexClient,
     now: datetime | None = None,
+    progress: Progress | None = None,
 ) -> RunReport:
     started = datetime.now(timezone.utc)
     moment = now or started
     try:
-        report = _run_cycle(settings, state, sonarr, plex, moment)
+        report = _run_cycle(settings, state, sonarr, plex, moment, progress)
     except Exception as exc:
         logger.exception("Cycle failed before any library changes")
         report = RunReport(
@@ -71,7 +73,9 @@ def _run_cycle(
     sonarr: SonarrClient,
     plex: PlexClient,
     now: datetime,
+    progress: Progress | None = None,
 ) -> RunReport:
+    report_progress(progress, "Checking Sonarr and Plex.")
     try:
         version = sonarr.status_version()
     except Exception:
@@ -84,12 +88,26 @@ def _run_cycle(
 
     tag_id = sonarr.ensure_tag(settings.sonarr_tag)
     rows = select_tagged(sonarr.list_series(), tag_id)
-    snapshots = [
-        parse_series(row, sonarr.list_episodes(int(row["id"])), now) for row in rows
-    ]
-    shows = plex.list_shows()
+    total = len(rows)
+    snapshots = []
+    if total == 0:
+        report_progress(progress, "Sonarr episodes, 0 of 0.", done=0, total=0)
+    for index, row in enumerate(rows, start=1):
+        title = str(row.get("title") or f"Series {row.get('id')}")
+        report_progress(
+            progress,
+            f"Sonarr episodes, {index} of {total}: {title}.",
+            done=index,
+            total=total,
+        )
+        snapshots.append(parse_series(row, sonarr.list_episodes(int(row["id"])), now))
+    shows = plex.list_shows(progress=progress)
     window = timedelta(days=settings.watch_window_days)
-    history, complete = plex.recent_history(now - window)
+    history, complete = plex.recent_history(
+        now - window,
+        progress=progress,
+        window_days=settings.watch_window_days,
+    )
     sessions = plex.active_sessions()
     overrides = load_overrides(settings.data_dir / "overrides.json")
     index = build_watch_index(
@@ -111,6 +129,7 @@ def _run_cycle(
         now,
         sonarr.queued_seasons(),
         sonarr.running_searches(),
+        progress,
     )
 
 

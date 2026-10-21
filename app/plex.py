@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from app.models import PlexShow, ShowActivity, WatchIndex
+from app.progress import Progress, count_phrase, report
 
 logger = logging.getLogger("season_keeper.plex")
 
@@ -236,7 +237,7 @@ class PlexClient:
         container = data.get("MediaContainer", data)
         return str(container.get("friendlyName") or container.get("machineIdentifier") or "plex")
 
-    def list_shows(self) -> list[PlexShow]:
+    def list_shows(self, progress: Progress | None = None) -> list[PlexShow]:
         sections, _ = container_items(self._request("/library/sections"), "Directory")
         shows: list[PlexShow] = []
         seen: set[str] = set()
@@ -246,6 +247,12 @@ class PlexClient:
             key = section.get("key")
             if not key:
                 continue
+            title = str(section.get("title") or "TV")
+            report(
+                progress,
+                f'Plex library "{title}", {count_phrase(len(shows), "show")} so far.',
+                done=len(shows),
+            )
             payload = self._request(
                 f"/library/sections/{key}/all",
                 params={"includeGuids": 1},
@@ -260,14 +267,33 @@ class PlexClient:
                     continue
                 seen.add(show.rating_key)
                 shows.append(show)
+            report(
+                progress,
+                f'Plex library "{title}", {count_phrase(len(shows), "show")} so far.',
+                done=len(shows),
+            )
         logger.info("Indexed %s Plex shows across TV libraries", len(shows))
         return shows
 
-    def recent_history(self, cutoff: datetime) -> tuple[list[dict], bool]:
+    def recent_history(
+        self,
+        cutoff: datetime,
+        progress: Progress | None = None,
+        window_days: int | None = None,
+    ) -> tuple[list[dict], bool]:
         cutoff_epoch = int(cutoff.timestamp())
         kept: list[dict] = []
         start = 0
         complete = True
+        window = f"{window_days}-day " if window_days is not None else ""
+
+        def note() -> None:
+            report(
+                progress,
+                f"Plex history, {count_phrase(len(kept), 'play')} inside the {window}window.",
+                done=len(kept),
+            )
+
         while True:
             payload = self._request(
                 "/status/sessions/history/all",
@@ -279,8 +305,10 @@ class PlexClient:
             )
             items, total = container_items(payload, "Metadata", "Video")
             if not items:
+                note()
                 break
             stop = False
+            hit_cap = False
             for item in items:
                 viewed_raw = item.get("viewedAt")
                 if viewed_raw is None:
@@ -292,11 +320,15 @@ class PlexClient:
                     break
                 kept.append(item)
                 if len(kept) >= self.max_items:
-                    logger.warning(
-                        "Stopped reading Plex history at %s items, still inside the watch window",
-                        self.max_items,
-                    )
-                    return self._enrich(kept), False
+                    hit_cap = True
+                    break
+            note()
+            if hit_cap:
+                logger.warning(
+                    "Stopped reading Plex history at %s items, still inside the watch window",
+                    self.max_items,
+                )
+                return self._enrich(kept, progress), False
             if stop:
                 break
             start += len(items)
@@ -304,15 +336,16 @@ class PlexClient:
                 break
             if len(items) < self.page_size:
                 break
-        return self._enrich(kept), complete
+        return self._enrich(kept, progress), complete
 
     def active_sessions(self) -> list[dict]:
         payload = self._request("/status/sessions")
         items, _ = container_items(payload, "Metadata", "Video")
         return items
 
-    def _enrich(self, items: list[dict]) -> list[dict]:
+    def _enrich(self, items: list[dict], progress: Progress | None = None) -> list[dict]:
         hydrated = 0
+        lookups = 0
         for item in items:
             if item.get("type") not in (None, "episode"):
                 continue
@@ -331,9 +364,21 @@ class PlexClient:
                 meta = self._metadata(str(rating_key))
             except PlexError as exc:
                 if exc.status == 404:
+                    lookups += 1
+                    report(
+                        progress,
+                        f"Filling in play details, {count_phrase(lookups, 'lookup')}.",
+                        done=lookups,
+                    )
                     continue
                 raise
+            lookups += 1
             hydrated += 1
+            report(
+                progress,
+                f"Filling in play details, {count_phrase(lookups, 'lookup')}.",
+                done=lookups,
+            )
             if not meta:
                 continue
             if not item.get("grandparentRatingKey"):

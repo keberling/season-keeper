@@ -25,6 +25,7 @@ from app.config import (
     save_settings,
 )
 from app.plex import PlexClient
+from app.progress import Progress
 from app.service import (
     SeriesNotFound,
     delete_later_seasons,
@@ -38,6 +39,7 @@ from app.state import State
 logger = logging.getLogger("season_keeper")
 PAGE = Path(__file__).with_name("status_page.html").read_text(encoding="utf-8")
 ADMIN_PAGE = Path(__file__).with_name("admin_page.html").read_text(encoding="utf-8")
+STATS_PAGE = Path(__file__).with_name("stats_page.html").read_text(encoding="utf-8")
 NO_STORE = {"Cache-Control": "no-store"}
 _SETUP_REQUIRED = "Save Sonarr and Plex on the admin page first"
 
@@ -49,6 +51,7 @@ class Holder:
         self.lock = threading.Lock()
         self.scheduler: BackgroundScheduler | None = None
         self.running = False
+        self.progress = Progress()
 
 
 holder = Holder()
@@ -131,11 +134,12 @@ def cycle() -> bool:
         logger.info("Skipped a cycle because another run is in progress")
         return False
     holder.running = True
+    holder.progress.update("Checking Sonarr and Plex.")
     sonarr = None
     plex = None
     try:
         sonarr, plex = _clients(settings)
-        report = run_cycle(settings, state, sonarr, plex)
+        report = run_cycle(settings, state, sonarr, plex, progress=holder.progress)
         if report.error:
             logger.error("Cycle error: %s", report.error)
     except Exception:
@@ -145,6 +149,7 @@ def cycle() -> bool:
             sonarr.close()
         if plex is not None:
             plex.close()
+        holder.progress.clear()
         holder.running = False
         holder.lock.release()
     return True
@@ -260,6 +265,38 @@ def admin() -> HTMLResponse:
     return HTMLResponse(ADMIN_PAGE, headers=NO_STORE)
 
 
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page() -> HTMLResponse:
+    return HTMLResponse(STATS_PAGE, headers=NO_STORE)
+
+
+@app.get("/api/savings")
+def savings() -> JSONResponse:
+    settings = _require_ready()
+    assert holder.state is not None
+    report = holder.state.load_report()
+    series = (report or {}).get("series") or []
+    possible = sum(int(row.get("later_bytes") or 0) for row in series)
+    ready = sum(
+        int(row.get("bytes_to_free") or 0)
+        for row in series
+        if row.get("action") == "prune" and not row.get("applied")
+    )
+    events = holder.state.freed_events()
+    return JSONResponse(
+        {
+            "possible_bytes": possible,
+            "ready_bytes": ready,
+            "freed_bytes": sum(int(event["bytes"]) for event in events),
+            "series_count": len(series),
+            "scanned_at": None if report is None else report.get("finished_at"),
+            "events": events,
+            "configured": settings.configured,
+        },
+        headers=NO_STORE,
+    )
+
+
 def _status_body() -> dict:
     settings = _require_ready()
     assert holder.state is not None
@@ -276,6 +313,7 @@ def _status_body() -> dict:
         "keep_seasons": sorted(settings.keep_season_numbers),
         "tag": settings.sonarr_tag,
         "running": holder.running,
+        "progress": holder.progress.snapshot() if holder.running else None,
         "next_run_at": next_run,
         "report": holder.state.load_report(),
     }
@@ -342,6 +380,7 @@ def series_preview(series_id: int, request: Request) -> dict:
     if not holder.lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A run is already in progress")
     holder.running = True
+    holder.progress.update("Reading this show from Sonarr.")
     sonarr = None
     try:
         sonarr = SonarrClient(
@@ -355,6 +394,7 @@ def series_preview(series_id: int, request: Request) -> dict:
     finally:
         if sonarr is not None:
             sonarr.close()
+        holder.progress.clear()
         holder.running = False
         holder.lock.release()
 
@@ -369,6 +409,7 @@ def _manual(request: Request, series_id: int, body: ConfirmBody, action) -> dict
     if not holder.lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A run is already in progress")
     holder.running = True
+    holder.progress.update("Reading this show from Sonarr.")
     sonarr = None
     try:
         sonarr = SonarrClient(
@@ -385,6 +426,7 @@ def _manual(request: Request, series_id: int, body: ConfirmBody, action) -> dict
     finally:
         if sonarr is not None:
             sonarr.close()
+        holder.progress.clear()
         holder.running = False
         holder.lock.release()
 
