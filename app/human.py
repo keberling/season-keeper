@@ -133,6 +133,28 @@ def dismissed_line(title: str) -> str:
     return f"Dismissed the deletion request for {title}. The files stay on disk."
 
 
+def queue_line(phase: str, label: str, title: str, error: str | None = None) -> str:
+    """Activity sentence for a queued task. phase is queued, started, finished, or failed."""
+    if label in {"Run now", "Refresh preview"}:
+        sentences = {
+            "queued": "Queued a library refresh.",
+            "started": "Started a library refresh.",
+            "finished": "Finished a library refresh.",
+            "failed": "Failed a library refresh.",
+        }
+        text = sentences.get(phase, f"{phase} a library refresh.")
+        if error and phase == "failed":
+            return f"{text} {error}"
+        return text
+    verb = {"queued": "Queued", "started": "Started", "finished": "Finished", "failed": "Failed"}.get(
+        phase, phase.capitalize()
+    )
+    text = f"{verb} {label} for {title}."
+    if error and phase == "failed":
+        return f"{text} {error}"
+    return text
+
+
 def cycle_summary(
     *,
     dry_run: bool,
@@ -146,6 +168,8 @@ def cycle_summary(
     restored_seasons: int,
     freed_bytes: int,
     pending_bytes: int,
+    queued: int = 0,
+    queued_bytes: int = 0,
 ) -> str:
     """One sentence a person can read in the container log."""
     parts: list[str] = []
@@ -165,6 +189,8 @@ def cycle_summary(
 
     if freed_bytes:
         parts.append(f"freed {format_bytes(freed_bytes)}")
+    if queued:
+        parts.append(f"{_shows(queued)} queued for deletion ({format_bytes(queued_bytes)})")
     if pending:
         parts.append(f"{_shows(pending)} waiting for approval ({format_bytes(pending_bytes)})")
     if restored_seasons:

@@ -161,6 +161,7 @@ def apply_decision(
     honor_cooldown: bool = True,
     announce_preview: bool = True,
     confirmed: bool = False,
+    defer_deletes: bool = False,
 ) -> SeriesResult:
     decision = without_specials(series, decision)
     keep = managed_keep(settings.keep_seasons) | frozenset(decision.kept_seasons)
@@ -198,10 +199,20 @@ def apply_decision(
         and not settings.dry_run
         and settings.require_delete_approval
     )
+    queued_delete = False
+    deferring = (
+        defer_deletes
+        and decision.action == "prune"
+        and not settings.dry_run
+        and not needs_approval
+        and bool(decision.delete_file_ids)
+    )
     if settings.dry_run and announce_preview and decision.action in {"prune", "restore"}:
         reason = "Preview only. " + reason
     if needs_approval:
         reason = "Approval required before any files are deleted. " + reason
+    if deferring:
+        reason = "Queued for deletion. One show is removed at a time. " + reason
     if waiting:
         reason = reason + " Waiting: " + "; ".join(waiting) + "."
 
@@ -209,6 +220,10 @@ def apply_decision(
         assert_safe(series, decision, keep)
         if needs_approval:
             _apply_keep_monitoring(series, decision, actions)
+        elif deferring:
+            if _apply_keep_monitoring(series, decision, actions):
+                applied = True
+            queued_delete = True
         elif not settings.dry_run and decision.action in {"prune", "restore"}:
             if decision.season_monitored is not None:
                 payload = series_update_payload(
@@ -319,6 +334,7 @@ def apply_decision(
         applied=applied,
         pending_approval=needs_approval and error is None,
         protected_seasons=list(decision.protected_seasons),
+        queued_delete=queued_delete and error is None,
     )
 
 
@@ -332,6 +348,7 @@ def execute(
     queue: set[tuple[int, int]],
     running_searches: set[tuple[int, int]],
     progress: Progress | None = None,
+    defer_deletes: bool = False,
 ) -> RunReport:
     started = now
     results: list[SeriesResult] = []
@@ -363,6 +380,7 @@ def execute(
             queue=queue,
             running_searches=running_searches,
             announce_preview=not outside,
+            defer_deletes=defer_deletes,
         )
         if outside and result.action in {"prune", "restore"}:
             result.searches_ran = []
@@ -403,9 +421,14 @@ def execute(
     searches = 0
     restored_seasons = 0
     freed_bytes = 0
+    queued = 0
+    queued_bytes = 0
     for result in results:
         counts[result.action] = counts.get(result.action, 0) + 1
         protected += len(result.protected_seasons)
+        if result.queued_delete:
+            queued += 1
+            queued_bytes += result.bytes_to_free
         if result.pending_approval:
             pending += 1
             pending_bytes += result.bytes_to_free
@@ -426,6 +449,8 @@ def execute(
         restored_seasons=restored_seasons,
         freed_bytes=freed_bytes,
         pending_bytes=pending_bytes,
+        queued=queued,
+        queued_bytes=queued_bytes,
     )
     logger.info("%s", summary)
     state.record_cycle(

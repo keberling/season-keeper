@@ -110,6 +110,11 @@
         <p id="subtitle">Season 1 stays. Later seasons go after 90 quiet days, and come back when season 1 is played.</p>
       </div>
       <div class="top-actions">
+        <div class="queue-wrap">
+          <button id="queue-button" class="ghost" type="button" hidden>0 actions queued</button>
+          <div id="queue-menu" class="queue-menu" hidden></div>
+        </div>
+        <button id="tasks-open" class="ghost" type="button">Tasks</button>
         <span id="mode" class="mode preview">Preview</span>
         <a class="ghost" href="/stats">Savings</a>
         <a class="ghost" href="/admin">Admin</a>
@@ -130,8 +135,22 @@
     </section>
     <section id="warnings"></section>
     <section id="stats" class="stats"></section>
-    <p id="showing" class="meta-line"></p>
-    <section id="shows" class="shows"></section>
+    <div class="library">
+      <div class="library-main">
+        <p id="showing" class="meta-line"></p>
+        <section id="shows" class="shows"></section>
+      </div>
+      <aside id="tasks" class="tasks" aria-label="Tasks">
+        <div class="tasks-head">
+          <h2>Tasks</h2>
+          <button type="button" id="tasks-collapse" class="ghost">Hide</button>
+        </div>
+        <p id="tasks-eta" class="meta-line"></p>
+        <p id="tasks-pause-reason" class="meta-line"></p>
+        <button type="button" id="tasks-pause" class="ghost">Pause queue</button>
+        <div id="tasks-list"></div>
+      </aside>
+    </div>
     <footer class="foot">
       <p id="schedule" class="meta-line"></p>
       <label class="token">Token
@@ -156,7 +175,7 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
   <script>
-    const state = { status: null, filter: "matched", query: "", modal: null };
+    const state = { status: null, filter: "matched", query: "", modal: null, queue: null };
     let pollTimer = null;
     let pollHold = false;
     let pollGen = 0;
@@ -402,6 +421,7 @@
         if (pollHold && !next.running) return;
         const finished = Boolean(state.status && state.status.running) && !next.running;
         state.status = next;
+        if (next.queue) state.queue = next.queue;
         if (finished) {
           render();
           if (!pollHold) stopPoll();
@@ -413,7 +433,7 @@
         button.textContent = needsSetup
           ? "Open admin"
           : (next.running ? "Reading libraries…" : (next.dry_run ? "Refresh preview" : "Run now"));
-        button.disabled = !needsSetup && Boolean(next.running);
+        button.disabled = false;
         if (!next.running && !pollHold) stopPoll();
       } catch (error) {
         // The next poll tries again.
@@ -450,7 +470,7 @@
       refreshButton.textContent = needsSetup
         ? "Open admin"
         : (status && status.running ? "Reading libraries…" : (preview ? "Refresh preview" : "Run now"));
-      refreshButton.disabled = !needsSetup && Boolean(status && status.running);
+      refreshButton.disabled = false;
 
       const days = status ? status.watch_window_days : 90;
       const interval = status ? status.watch_interval_minutes : 15;
@@ -545,6 +565,7 @@
       document.getElementById("showing").hidden = needsSetup;
       renderChips();
       renderProgress();
+      renderQueue();
     }
 
     function renderShow(row) {
@@ -582,11 +603,13 @@
             <div class="pills">
               <span class="badge ${kind}" title="${esc(meaning)}">${label}</span>
               ${liveMark}
+              ${taskPill(row.sonarr_id)}
             </div>
           </div>
         </div>
         <p class="tile-size ${sizeKind}"><span>${esc(sizeLabel)}</span><strong>${esc(sizeValue)}</strong></p>
         <p class="reason" title="${esc(row.reason || "")}">${esc(row.reason || "")}</p>
+        ${taskLine(row.sonarr_id)}
         <p class="meta-line">${row.kept_episode_count || 0} season 1 ep · ${row.later_episode_count || 0} later${watched ? ` · ${esc(watched)}` : ""}</p>
         ${row.applied ? `<p class="meta-line">This card is the action that just ran. Refresh to read Sonarr again.</p>` : ""}
         <div class="row-actions">
@@ -670,7 +693,10 @@
         const result = await api(path, { method: "POST", body: JSON.stringify({ confirm: true }) });
         closeModal();
         await load();
-        toast(result.reason || "Done.");
+        const label = modal.action === "delete" ? "Queue season deletion" : "Download missing seasons";
+        toast(result && result.job && result.job.deduped
+          ? "Already queued."
+          : `Queued. ${label} will run when earlier tasks finish.`);
       } catch (error) {
         toast(error.message);
         go.disabled = false;
@@ -680,6 +706,7 @@
 
     async function load() {
       state.status = await api("/api/status");
+      if (state.status && state.status.queue) state.queue = state.status.queue;
       render();
       if (state.status && state.status.running) ensurePoll();
     }
@@ -701,9 +728,7 @@
       try {
         state.status = await api("/api/run", { method: "POST", body: "{}" });
         render();
-        const current = report();
-        if (current && current.error) toast(current.error);
-        else toast(state.status && state.status.dry_run === false ? "Run finished." : "Preview updated.");
+        toast("Queued a library refresh.");
       } catch (error) {
         toast(error.message);
         try {
@@ -735,7 +760,7 @@
           body: JSON.stringify({ ignore: ignore }),
         });
         await load();
-        toast(result.reason || (ignore ? "Ignored." : "Included."));
+        toast(ignore ? "Queued. Ignore will run when earlier tasks finish." : "Queued. Include will run when earlier tasks finish.");
       } catch (error) {
         toast(error.message);
         button.disabled = false;
@@ -747,7 +772,7 @@
       try {
         await api(`/api/series/${seriesId}/dismiss`, { method: "POST", body: "{}" });
         await load();
-        toast("Dismissed. Files stay until you approve a delete.");
+        toast("Queued. Dismiss will run when earlier tasks finish.");
       } catch (error) {
         toast(error.message);
         button.disabled = false;
@@ -814,7 +839,193 @@
       if (event.key === "Escape") closeModal();
     });
 
+    function ago(iso) {
+      if (!iso) return "";
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return "";
+      return relative(date);
+    }
+
+    function queueData() {
+      return state.queue || (state.status && state.status.queue) || null;
+    }
+
+    function jobsFor(seriesId) {
+      const queue = queueData();
+      const jobs = queue && Array.isArray(queue.jobs) ? queue.jobs : [];
+      const id = Number(seriesId);
+      return jobs.filter((job) => Number(job.sonarr_id) === id);
+    }
+
+    function taskFor(seriesId) {
+      const mine = jobsFor(seriesId);
+      return mine.find((job) => job.status === "running" || job.status === "queued") || mine[0] || null;
+    }
+
+    function pillLabel(status) {
+      if (status === "queued") return "Queued";
+      if (status === "running") return "Working";
+      if (status === "failed") return "Failed";
+      if (status === "cancelled") return "Cancelled";
+      return "Done";
+    }
+
+    function pillKind(status) {
+      if (status === "queued") return "queued";
+      if (status === "running") return "working";
+      if (status === "failed" || status === "cancelled") return "failed";
+      return "done";
+    }
+
+    function jobSentence(job) {
+      const label = job.label || "Task";
+      if (job.status === "queued") return `Queued. ${label} will run when earlier tasks finish.`;
+      if (job.status === "running") return `Working. ${label} is running now.`;
+      if (job.status === "failed") return `Failed. ${job.error || "The task failed."}`;
+      if (job.status === "cancelled") return job.detail || "Cancelled.";
+      if (job.detail) return `Done. ${job.detail}`;
+      return `Done. ${label} finished.`;
+    }
+
+    function taskPill(seriesId) {
+      const job = taskFor(seriesId);
+      if (!job) return "";
+      return `<span class="badge ${pillKind(job.status)}">${pillLabel(job.status)}</span>`;
+    }
+
+    function taskLine(seriesId) {
+      const job = taskFor(seriesId);
+      if (!job) return "";
+      return `<p class="meta-line">${esc(jobSentence(job))}</p>`;
+    }
+
+    function renderQueue() {
+      const queue = queueData();
+      const button = document.getElementById("queue-button");
+      const menu = document.getElementById("queue-menu");
+      const list = document.getElementById("tasks-list");
+      const eta = document.getElementById("tasks-eta");
+      const reason = document.getElementById("tasks-pause-reason");
+      const pause = document.getElementById("tasks-pause");
+      if (!queue) {
+        button.hidden = true;
+        return;
+      }
+      const waiting = Number(queue.queued_count) || 0;
+      const working = Number(queue.running_count) || 0;
+      button.hidden = waiting === 0 && working === 0;
+      if (waiting === 1) button.textContent = "1 action queued";
+      else if (waiting > 1) button.textContent = waiting + " actions queued";
+      else if (working === 1) button.textContent = "1 action working";
+      else button.textContent = working + " actions working";
+      const active = (queue.jobs || []).filter((job) => job.status === "queued" || job.status === "running");
+      menu.innerHTML = active.length
+        ? active.map(queueRow).join("")
+        : `<p class="meta-line">Nothing is waiting.</p>`;
+      const jobs = queue.jobs || [];
+      list.innerHTML = jobs.length
+        ? jobs.map(taskRow).join("")
+        : `<p class="task-empty">Nothing is queued.</p>`;
+      eta.textContent = queue.delete_eta || "";
+      reason.textContent = queue.pause_reason || "";
+      pause.textContent = queue.deletes_paused ? "Resume deletes" : "Pause queue";
+    }
+
+    function queueRow(job) {
+      const cancel = job.status === "queued"
+        ? `<button type="button" class="ghost" data-cancel="${job.id}">Cancel</button>`
+        : "";
+      return `<div class="queue-row">
+        <strong>${esc(job.title || "Show")}</strong>
+        <span class="badge ${pillKind(job.status)}">${pillLabel(job.status)}</span>
+        <p class="meta-line">${esc(job.label || "")} · ${esc(ago(job.created_at))}</p>
+        ${cancel}
+      </div>`;
+    }
+
+    function taskRow(job) {
+      const cancel = job.status === "queued"
+        ? `<button type="button" class="ghost" data-cancel="${job.id}">Cancel</button>`
+        : "";
+      const why = job.status === "failed" ? (job.error || "") : (job.detail || "");
+      return `<div class="task-row">
+        <strong>${esc(job.title || "Show")}</strong>
+        <span class="badge ${pillKind(job.status)}">${pillLabel(job.status)}</span>
+        <p class="meta-line">${esc(jobSentence(job))}${why && job.status !== "queued" && job.status !== "running" ? "" : ""}</p>
+        <p class="meta-line">${esc(ago(job.created_at))}</p>
+        ${cancel}
+      </div>`;
+    }
+
+    async function pollQueue() {
+      try {
+        state.queue = await api("/api/queue");
+        render();
+      } catch {
+        /* The next poll tries again. */
+      }
+    }
+
+    function ensureQueuePoll() {
+      if (state.queueTimer) return;
+      state.queueTimer = setInterval(pollQueue, 3000);
+    }
+
+    async function cancelJob(id) {
+      try {
+        await api("/api/queue/" + id + "/cancel", { method: "POST", body: "{}" });
+        await pollQueue();
+        toast("Cancelled.");
+      } catch (error) {
+        toast(error.message);
+        await pollQueue();
+      }
+    }
+
+    async function togglePause() {
+      const queue = queueData() || {};
+      const paused = !queue.deletes_paused;
+      try {
+        state.queue = await api("/api/queue/pause", {
+          method: "POST",
+          body: JSON.stringify({ paused: paused }),
+        });
+        renderQueue();
+        toast(paused ? "Deletes are paused." : "Deletes can run again.");
+      } catch (error) {
+        toast(error.message);
+      }
+    }
+
+    document.getElementById("queue-button").addEventListener("click", () => {
+      const menu = document.getElementById("queue-menu");
+      menu.hidden = !menu.hidden;
+    });
+    document.getElementById("queue-menu").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-cancel]");
+      if (!button) return;
+      cancelJob(button.getAttribute("data-cancel"));
+    });
+    document.getElementById("tasks-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-cancel]");
+      if (!button) return;
+      cancelJob(button.getAttribute("data-cancel"));
+    });
+    document.getElementById("tasks-pause").addEventListener("click", togglePause);
+    document.getElementById("tasks-collapse").addEventListener("click", () => {
+      const panel = document.getElementById("tasks");
+      const narrow = window.matchMedia("(max-width: 900px)").matches;
+      if (narrow) panel.classList.remove("open");
+      else panel.classList.add("collapsed");
+    });
+    document.getElementById("tasks-open").addEventListener("click", () => {
+      const panel = document.getElementById("tasks");
+      panel.classList.remove("collapsed");
+      panel.classList.add("open");
+    });
+
     renderChips();
+    ensureQueuePoll();
     load().catch((error) => {
       document.getElementById("banner").textContent = error.message;
     });

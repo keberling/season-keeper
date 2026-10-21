@@ -1,6 +1,7 @@
 """Live deletes wait for approval, and a non-empty allowlist leaves everyone else in preview."""
 
 import json
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -300,11 +301,12 @@ def test_status_scope_and_dismiss_follow_the_saved_settings(tmp_path, monkeypatc
         )
         dismissed = client.post("/api/series/7/dismiss")
         assert dismissed.status_code == 200
-        body = dismissed.json()
-        assert body["dismissed"] is True
-        assert body["pending_approval"] is False
-        assert body["reason"].startswith("Dismissed.")
+        assert dismissed.json()["queued"] is True
+        deadline = time.time() + 5
+        while time.time() < deadline and not holder.state.is_dismissed(7):
+            time.sleep(0.02)
         stored = client.get("/api/status").json()["report"]["series"][0]
+        assert stored["reason"].startswith("Dismissed.")
         assert stored["dismissed"] is True
         assert stored["pending_approval"] is False
         assert holder.state.is_dismissed(7) is True

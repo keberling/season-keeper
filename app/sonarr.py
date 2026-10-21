@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from app.http_retry import request_with_retry
 from app.models import EpisodeSnapshot, SeasonSnapshot, SeriesSnapshot
 
 logger = logging.getLogger("trimarr.sonarr")
@@ -204,7 +205,7 @@ class SonarrClient:
         return f"{self.base_url}/{path.lstrip('/')}"
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self._client.request(method, self._url(path), **kwargs)
+        response = request_with_retry(self._client, method, self._url(path), **kwargs)
         if response.status_code >= 400:
             body = response.text[:500]
             raise SonarrError(
@@ -272,11 +273,17 @@ class SonarrClient:
     def delete_episode_files(self, episode_file_ids: list[int]) -> None:
         for start in range(0, len(episode_file_ids), 100):
             chunk = episode_file_ids[start : start + 100]
-            self._request(
-                "DELETE",
-                "/api/v3/episodefile/bulk",
-                json={"episodeFileIds": chunk},
-            )
+            try:
+                self._request(
+                    "DELETE",
+                    "/api/v3/episodefile/bulk",
+                    json={"episodeFileIds": chunk},
+                )
+            except SonarrError as exc:
+                if exc.status == 404:
+                    logger.info("Episode files were already gone")
+                    continue
+                raise
 
     def search_season(self, series_id: int, season_number: int) -> None:
         self._request(

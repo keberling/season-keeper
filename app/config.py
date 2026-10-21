@@ -48,6 +48,10 @@ STORED_FIELDS = (
     "radarr_root_folder",
     "radarr_quality_profile_id",
     "radarr_tag",
+    "delete_min_interval_seconds",
+    "delete_hourly_series",
+    "delete_hourly_gigabytes",
+    "delete_daily_terabytes",
 )
 _CONNECTION_ENV = (
     ("SONARR_URL", "sonarr_url"),
@@ -117,6 +121,10 @@ class Settings(BaseModel):
     radarr_root_folder: str = ""
     radarr_quality_profile_id: int | None = None
     radarr_tag: str = Field(default="season-keeper", min_length=1)
+    delete_min_interval_seconds: int = Field(default=30, ge=0, le=86400)
+    delete_hourly_series: int = Field(default=50, ge=1, le=100000)
+    delete_hourly_gigabytes: int = Field(default=500, ge=1, le=100000)
+    delete_daily_terabytes: int = Field(default=3, ge=1, le=10000)
 
     port: int = Field(default=8787, ge=1, le=65535)
     data_dir: Path = Path("/data")
@@ -304,6 +312,10 @@ class SettingsWrite(BaseModel):
     radarr_root_folder: str | None = None
     radarr_quality_profile_id: int | None = None
     radarr_tag: str | None = None
+    delete_min_interval_seconds: int | None = Field(default=None, ge=0, le=86400)
+    delete_hourly_series: int | None = Field(default=None, ge=1, le=100000)
+    delete_hourly_gigabytes: int | None = Field(default=None, ge=1, le=100000)
+    delete_daily_terabytes: int | None = Field(default=None, ge=1, le=10000)
     app_token: str = ""
     clear_app_token: bool = False
 
@@ -478,6 +490,18 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
             update, "radarr_quality_profile_id", current.radarr_quality_profile_id
         ),
         radarr_tag=radarr_tag,
+        delete_min_interval_seconds=current.delete_min_interval_seconds
+        if update.delete_min_interval_seconds is None
+        else update.delete_min_interval_seconds,
+        delete_hourly_series=current.delete_hourly_series
+        if update.delete_hourly_series is None
+        else update.delete_hourly_series,
+        delete_hourly_gigabytes=current.delete_hourly_gigabytes
+        if update.delete_hourly_gigabytes is None
+        else update.delete_hourly_gigabytes,
+        delete_daily_terabytes=current.delete_daily_terabytes
+        if update.delete_daily_terabytes is None
+        else update.delete_daily_terabytes,
         app_token=app_token,
     )
     return Settings.model_validate(data)
@@ -545,6 +569,10 @@ def public_settings(settings: Settings) -> dict:
         "radarr_root_folder": settings.radarr_root_folder,
         "radarr_quality_profile_id": settings.radarr_quality_profile_id,
         "radarr_tag": settings.radarr_tag,
+        "delete_min_interval_seconds": settings.delete_min_interval_seconds,
+        "delete_hourly_series": settings.delete_hourly_series,
+        "delete_hourly_gigabytes": settings.delete_hourly_gigabytes,
+        "delete_daily_terabytes": settings.delete_daily_terabytes,
         "app_token_set": bool(settings.app_token),
     }
 
