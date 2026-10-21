@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.models import PolicySettings
 
-logger = logging.getLogger("season_keeper")
+logger = logging.getLogger("trimarr")
 
 STORE_NAME = "settings.json"
 STORED_FIELDS = (

@@ -1,15 +1,15 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>season-keeper</Name>
-  <Repository>ghcr.io/keberling/season-keeper:latest</Repository>
-  <Registry>https://github.com/keberling/season-keeper/pkgs/container/season-keeper</Registry>
+  <Name>Trimarr</Name>
+  <Repository>ghcr.io/keberling/trimarr:latest</Repository>
+  <Registry>https://github.com/keberling/season-keeper/pkgs/container/trimarr</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/keberling/season-keeper/issues</Support>
   <Project>https://github.com/keberling/season-keeper</Project>
-  <Overview>Keeps every Sonarr series down to season 1 unless Plex shows a play in the last 90 days. A show tagged keep-all is left alone by the schedule, and Ignore on a show applies that tag. After the container starts, open the WebUI and use Admin to enter Sonarr and Plex. The schedule stays in preview until you choose Live on that page. Season 1 is always kept. From the library page you can delete later seasons of one show, then ask Sonarr to download them again. Set the restart policy to Unless Stopped. Use the Unraid server IP for Sonarr and Plex. Localhost inside this container is Season Keeper itself.</Overview>
+  <Overview>Keeps every Sonarr series down to season 1 unless Plex shows a play in the last 90 days. A show tagged keep-all is left alone by the schedule, and Ignore on a show applies that tag. After the container starts, open the WebUI and use Admin to enter Sonarr and Plex. The schedule stays in preview until you choose Live on that page. Season 1 is always kept. From the library page you can delete later seasons of one show, then ask Sonarr to download them again. Set the restart policy to Unless Stopped. Use the Unraid server IP for Sonarr and Plex. Localhost inside this container is Trimarr itself.</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/keberling/season-keeper/main/unraid/my-season-keeper.xml</TemplateURL>

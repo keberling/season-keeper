@@ -223,7 +223,8 @@ def test_unraid_template_pulls_a_public_image_and_skips_secrets():
     xml = (
         Path(__file__).resolve().parents[1] / "unraid" / "my-season-keeper.xml"
     ).read_text(encoding="utf-8")
-    assert "ghcr.io/keberling/season-keeper:latest" in xml
+    assert "ghcr.io/keberling/trimarr:latest" in xml
+    assert "Trimarr" in xml
     assert "my-season-keeper.xml" in xml
     assert "Admin" in xml
     assert "SONARR_" not in xml

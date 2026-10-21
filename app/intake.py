@@ -21,7 +21,7 @@ from app.sonarr import (
 from app.state import State
 from app.watchlist import WatchlistItem, identity_key, load_watchlist
 
-logger = logging.getLogger("season_keeper")
+logger = logging.getLogger("trimarr")
 
 _DONE = {"added", "searched", "skipped"}
 _COUNTED = {"added", "searched"}

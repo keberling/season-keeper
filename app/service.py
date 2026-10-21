@@ -18,7 +18,7 @@ from app.progress import Progress, count_phrase, report as report_progress
 from app.sonarr import SonarrClient, parse_series, partition_ignored, series_tag_payload
 from app.state import State
 
-logger = logging.getLogger("season_keeper")
+logger = logging.getLogger("trimarr")
 
 
 class SeriesNotFound(RuntimeError):

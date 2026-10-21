@@ -240,7 +240,7 @@ def _plex(handler, hydrate_limit: int = 1) -> tuple[PlexClient, httpx.Client, ht
 
 
 def test_history_requests_guids_and_resolves_every_episode_key(caplog):
-    caplog.set_level(logging.DEBUG, logger="season_keeper.plex")
+    caplog.set_level(logging.DEBUG, logger="trimarr.plex")
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

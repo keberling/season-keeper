@@ -17,6 +17,10 @@ COPY app ./app
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
+LABEL org.opencontainers.image.title="Trimarr" \
+      org.opencontainers.image.description="Keeps Sonarr series at season 1 unless Plex shows a recent play, and adds watchlist titles to Sonarr and Radarr." \
+      org.opencontainers.image.source="https://github.com/keberling/season-keeper"
+
 EXPOSE 8787
 VOLUME /data
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

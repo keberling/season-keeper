@@ -18,7 +18,7 @@ import httpx
 from app.models import PlexShow, ShowActivity, WatchIndex
 from app.progress import Progress, count_phrase, report
 
-logger = logging.getLogger("season_keeper.plex")
+logger = logging.getLogger("trimarr.plex")
 
 _TVDB = re.compile(r"(?:thetvdb|tvdb)://(\d+)", re.IGNORECASE)
 _METADATA_ID = re.compile(r"/library/metadata/(\d+)")
@@ -265,9 +265,9 @@ class PlexClient:
             headers={
                 "Accept": "application/json",
                 "X-Plex-Token": token,
-                "X-Plex-Product": "Season Keeper",
+                "X-Plex-Product": "Trimarr",
                 "X-Plex-Version": "1.0.0",
-                "X-Plex-Client-Identifier": "season-keeper",
+                "X-Plex-Client-Identifier": "trimarr",
             },
         )
 

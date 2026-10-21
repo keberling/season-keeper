@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger("season_keeper.radarr")
+logger = logging.getLogger("trimarr.radarr")
 
 
 class RadarrError(RuntimeError):

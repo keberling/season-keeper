@@ -214,7 +214,7 @@ def test_discover_metadata_reads_guids_and_a_missing_plex_key_is_resolved():
 
 
 def test_new_show_and_movie_are_added_and_a_second_poll_does_not_repeat(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="season_keeper")
+    caplog.set_level(logging.INFO, logger="trimarr")
     api = Api()
     api.lookups[("show", "tvdb:73244")] = {
         "title": "The Office",
