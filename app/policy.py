@@ -12,6 +12,12 @@ Rules:
   deletes every season that is not kept.
 - A season whose files were added inside the new-season grace period is
   held. It is not unmonitored or deleted until that period ends.
+- A show Sonarr marks as continuing also keeps its current season (the
+  highest non-special season that has aired) while that season is fresh.
+  Fresh means the latest aired episode is inside the watch window, or the
+  season is still inside the new-season grace, whichever lasts longer.
+  That season stays monitored so new episodes can download. One sentence
+  explains it. Ended shows are unchanged. Specials are never that season.
 - A show added to a Plex watchlist inside the window is held, so a new
   watchlist entry is not pruned on the same day. A season 1 play still
   restores. The watchlist does not search later seasons by itself.
@@ -22,10 +28,10 @@ Rules:
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
-from app.human import ago, format_bytes, season_list
+from app.human import ago, aired_on, format_bytes, season_list, season_phrase
 from app.inventory import season_disk_bytes
 from app.models import Decision, PolicySettings, SeriesSnapshot, ShowWatch
 
@@ -77,6 +83,93 @@ def _grace_reason(protected: dict[int, datetime], grace: timedelta) -> str:
         until = (arrived + grace).astimezone(timezone.utc).date().isoformat()
         sentences.append(f"New season {number} added {added}, protected until {until}.")
     return " ".join(sentences)
+
+
+def _episode_aired(episode, now: datetime) -> bool:
+    if episode.season_number <= 0:
+        return False
+    if episode.air_date is not None:
+        return episode.air_date <= now
+    return bool(episode.aired)
+
+
+def current_aired_season(series: SeriesSnapshot, now: datetime) -> int | None:
+    """Highest non-special season that already has an aired episode."""
+    aired = {
+        episode.season_number
+        for episode in series.episodes
+        if _episode_aired(episode, now)
+    }
+    if not aired:
+        return None
+    return max(aired)
+
+
+def latest_aired_at(series: SeriesSnapshot, season_number: int, now: datetime) -> datetime | None:
+    dates = [
+        episode.air_date
+        for episode in series.episodes
+        if episode.season_number == season_number
+        and episode.air_date is not None
+        and _episode_aired(episode, now)
+    ]
+    if not dates:
+        return None
+    return max(dates)
+
+
+@dataclass(frozen=True)
+class _AiringKeep:
+    season: int
+    reason: str
+    monitor_episode_ids: tuple[int, ...]
+    monitor_season: bool
+
+
+def _airing_keep(
+    series: SeriesSnapshot,
+    settings: PolicySettings,
+    now: datetime,
+    keep: frozenset[int],
+    protected: dict[int, datetime],
+) -> _AiringKeep | None:
+    """Season 1 plus the fresh current season of a show that is still continuing."""
+    if not settings.keep_current_season:
+        return None
+    if (series.status or "").strip().lower() != "continuing":
+        return None
+    current = current_aired_season(series, now)
+    if current is None or current in keep:
+        return None
+    last = latest_aired_at(series, current, now)
+    by_air = last is not None and is_recent(last, now, settings.watch_window)
+    by_grace = current in protected
+    if not by_air and not by_grace:
+        return None
+    phrase = season_phrase(sorted(set(keep) | {current}))
+    if by_air and last is not None:
+        detail = f"last episode aired {aired_on(last)}"
+    else:
+        arrived = protected.get(current) or season_arrival(series, current)
+        if arrived is None:
+            detail = "current season"
+        else:
+            detail = f"added {arrived.astimezone(timezone.utc).date().isoformat()}"
+    monitor_ids = tuple(
+        episode.id
+        for episode in series.episodes
+        if episode.season_number == current and not episode.monitored
+    )
+    season_on = next(
+        (season.monitored for season in series.seasons if season.season_number == current),
+        not monitor_ids,
+    )
+    return _AiringKeep(
+        season=current,
+        reason=f"Still airing: keeping {phrase} ({detail}).",
+        monitor_episode_ids=monitor_ids,
+        monitor_season=not season_on or bool(monitor_ids) or not series.monitored,
+    )
 
 
 def managed_keep(keep: frozenset[int]) -> frozenset[int]:
@@ -352,6 +445,10 @@ def _prune(
         if now is not None and grace is not None
         else {}
     )
+    airing = _airing_keep(series, settings, now, keep, protected) if now is not None else None
+    if airing is not None:
+        keep = keep | frozenset({airing.season})
+        protected.pop(airing.season, None)
     protected_files = {
         episode.episode_file_id
         for episode in series.episodes
@@ -415,27 +512,36 @@ def _prune(
         or not series.monitored
         or monitor_new is not None
     )
+    other_kept_off = [
+        number for number in kept_unmonitored if airing is None or number != airing.season
+    ]
     if (
-        protected
-        and grace is not None
-        and not unmonitor_ids
+        not unmonitor_ids
         and not delete_ids
         and not later_still_monitored
-        and not kept_unmonitored
+        and not other_kept_off
+        and (airing is not None or (protected and grace is not None))
     ):
+        parts: list[str] = []
+        if protected and grace is not None:
+            parts.append(_grace_reason(protected, grace))
+        if airing is not None:
+            parts.append(airing.reason)
         return Decision(
             action="hold",
-            reason=_grace_reason(protected, grace),
+            reason=" ".join(parts),
             season_monitored=None,
             series_monitored=None,
             monitor_new_items=None,
-            monitor_episode_ids=(),
+            monitor_episode_ids=airing.monitor_episode_ids if airing is not None else (),
             unmonitor_episode_ids=(),
             delete_file_ids=(),
             delete_seasons=(),
             search_seasons=(),
             bytes_to_free=0,
             protected_seasons=tuple(sorted(protected)),
+            kept_seasons=(airing.season,) if airing is not None else (),
+            ensure_monitored_seasons=(airing.season,) if airing is not None and airing.monitor_season else (),
         )
     if not needs_put and not unmonitor_ids and not delete_ids:
         return _quiet(
@@ -465,7 +571,10 @@ def _prune(
         parts.append(f"Unmonitor seasons {season_list(seasons)}.")
     if protected and grace is not None:
         parts.append(_grace_reason(protected, grace))
-    parts.append(f"Season {season_list(sorted(keep))} stays.")
+    if airing is not None:
+        parts.append(airing.reason)
+    else:
+        parts.append(f"Season {season_list(sorted(keep))} stays.")
 
     if needs_put:
         for episode in series.episodes:
@@ -479,13 +588,15 @@ def _prune(
             season_monitored=season_map if needs_put else None,
             series_monitored=True if needs_put else None,
             monitor_new_items=monitor_new if needs_put else None,
-            monitor_episode_ids=(),
+            monitor_episode_ids=airing.monitor_episode_ids if airing is not None else (),
             unmonitor_episode_ids=tuple(unmonitor_ids),
             delete_file_ids=tuple(delete_ids),
             delete_seasons=tuple(sorted(delete_seasons)),
             search_seasons=(),
             bytes_to_free=bytes_to_free,
             protected_seasons=tuple(sorted(protected)),
+            kept_seasons=(airing.season,) if airing is not None else (),
+            ensure_monitored_seasons=(airing.season,) if airing is not None and airing.monitor_season else (),
         ),
     )
 

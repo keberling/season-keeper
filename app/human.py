@@ -37,6 +37,30 @@ def ago(when: datetime, now: datetime) -> str:
     return f"{minutes} {unit} ago"
 
 
+_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def aired_on(when: datetime) -> str:
+    """UTC calendar date as 'Oct 14'."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    utc = when.astimezone(timezone.utc)
+    return f"{_MONTHS[utc.month - 1]} {utc.day}"
+
+
 def season_list(numbers: list[int] | tuple[int, ...]) -> str:
     if not numbers:
         return "none"

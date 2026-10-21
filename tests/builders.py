@@ -59,6 +59,7 @@ def make_series(
     season_monitored: dict[int, bool] | None = None,
     monitor_new: str | None = "all",
     series_monitored: bool = True,
+    status: str | None = None,
 ) -> SeriesSnapshot:
     sizes = season_sizes or {}
     numbers = sorted({item.season_number for item in episodes} | set(sizes))
@@ -91,6 +92,9 @@ def make_series(
     }
     if monitor_new is not None:
         raw["monitorNewItems"] = monitor_new
+    normalized = str(status).strip().lower() if status else None
+    if normalized:
+        raw["status"] = normalized
     return SeriesSnapshot(
         id=sonarr_id,
         title=title,
@@ -101,6 +105,7 @@ def make_series(
         monitor_new_items=monitor_new,
         seasons=seasons,
         episodes=tuple(episodes),
+        status=normalized,
         raw=raw,
     )
 

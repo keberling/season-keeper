@@ -35,6 +35,7 @@ STORED_FIELDS = (
     "require_delete_approval",
     "live_series_ids",
     "new_season_grace_days",
+    "keep_current_season",
     "plex_watchlist_rss_url",
     "plex_friends_watchlist_rss_url",
     "watchlist_interval_minutes",
@@ -103,6 +104,7 @@ class Settings(BaseModel):
     require_delete_approval: bool = True
     live_series_ids: list[int] = Field(default_factory=list)
     new_season_grace_days: int | None = None
+    keep_current_season: bool = True
     plex_watchlist_rss_url: str = ""
     plex_friends_watchlist_rss_url: str = ""
     watchlist_interval_minutes: int = Field(default=5, ge=1, le=1440)
@@ -265,6 +267,7 @@ class Settings(BaseModel):
                 if self.new_season_grace_days is None
                 else self.new_season_grace_days
             ),
+            keep_current_season=self.keep_current_season,
         )
 
 
@@ -288,6 +291,7 @@ class SettingsWrite(BaseModel):
     monitor_new_items_when_idle: str | None = None
     require_delete_approval: bool | None = None
     new_season_grace_days: int | None = None
+    keep_current_season: bool | None = None
     plex_watchlist_rss_url: str | None = None
     plex_friends_watchlist_rss_url: str | None = None
     watchlist_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
@@ -449,6 +453,9 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         new_season_grace_days=current.new_season_grace_days
         if "new_season_grace_days" not in update.model_fields_set
         else update.new_season_grace_days,
+        keep_current_season=current.keep_current_season
+        if update.keep_current_season is None
+        else update.keep_current_season,
         plex_watchlist_rss_url=own_rss,
         plex_friends_watchlist_rss_url=friends_rss,
         watchlist_interval_minutes=current.watchlist_interval_minutes
@@ -523,6 +530,7 @@ def public_settings(settings: Settings) -> dict:
         "live_series_ids": list(settings.live_series_ids),
         "new_season_grace_days": settings.new_season_grace_days,
         "new_season_grace_days_effective": settings.policy().new_season_grace.days,
+        "keep_current_season": settings.keep_current_season,
         "plex_watchlist_rss_url": settings.plex_watchlist_rss_url,
         "plex_friends_watchlist_rss_url": settings.plex_friends_watchlist_rss_url,
         "watchlist_interval_minutes": settings.watchlist_interval_minutes,
@@ -600,6 +608,9 @@ def _bootstrap_from_env() -> dict | None:
         payload["require_delete_approval"] = approval in {"1", "true", "yes", "on"}
     _take_int(payload, "WATCH_WINDOW_DAYS", "watch_window_days")
     _take_int(payload, "NEW_SEASON_GRACE_DAYS", "new_season_grace_days")
+    keep_current = os.environ.get("KEEP_CURRENT_SEASON", "").strip().lower()
+    if keep_current:
+        payload["keep_current_season"] = keep_current in {"1", "true", "yes", "on"}
     _take_int(payload, "WATCH_INTERVAL_MINUTES", "watch_interval_minutes")
     _take_int(payload, "SEARCH_COOLDOWN_HOURS", "search_cooldown_hours")
     for env_name, field in (
