@@ -4,7 +4,8 @@ from pathlib import Path
 
 from app.engine import SafetyError, apply_decision, assert_safe, execute
 from app.inventory import build_inventory
-from app.models import WatchIndex
+from app.models import PlexShow, WatchIndex
+from app.plex import build_watch_index
 from app.policy import decide, plan_manual_restore
 from app.sonarr import parse_series, series_update_payload
 from app.state import State
@@ -259,6 +260,93 @@ def test_assert_safe_blocks_kept_season_delete():
         raise AssertionError("expected a safety error")
 
 
+def _later(sonarr_id: int, title: str, tvdb_id: int):
+    return make_series(
+        [
+            episode(sonarr_id * 10 + 1, 1, 1, file_id=sonarr_id * 100 + 1),
+            episode(sonarr_id * 10 + 2, 2, 1, file_id=sonarr_id * 100 + 2),
+        ],
+        sonarr_id=sonarr_id,
+        title=title,
+        tvdb_id=tvdb_id,
+        season_sizes={1: 100, 2: 500},
+    )
+
+
+def test_keyless_title_holds_that_show_and_prunes_the_other(tmp_path):
+    office = _later(1, "The Office (US)", 73244)
+    ncis = _later(2, "NCIS", 72108)
+    viewed = int(NOW.timestamp()) - 3600
+    index = build_watch_index(
+        [PlexShow("50", "The Office (US)", 73244), PlexShow("51", "NCIS", 72108)],
+        [{
+            "type": "episode",
+            "title": "Pilot",
+            "grandparentTitle": "The Office (US)",
+            "parentIndex": 1,
+            "viewedAt": viewed,
+        }],
+        [],
+        history_complete=True,
+        overrides={},
+        now=NOW,
+    )
+    assert index.history_complete is True
+    sonarr = FakeSonarr()
+    report = execute(
+        [office, ncis],
+        index,
+        sonarr,
+        _state(tmp_path),
+        policy(dry_run=False),
+        NOW,
+        set(),
+        set(),
+    )
+    by_id = {result.sonarr_id: result for result in report.results}
+    assert by_id[1].action == "hold"
+    assert "season was not known" in by_id[1].reason
+    assert by_id[1].search_seasons == []
+    assert by_id[1].delete_seasons == []
+    assert by_id[2].action == "prune"
+    assert sonarr.deleted == [202]
+    assert 101 not in sonarr.deleted
+    assert 201 not in sonarr.deleted
+
+
+def test_truncated_history_never_prunes(tmp_path):
+    office = _later(1, "The Office (US)", 73244)
+    ncis = _later(2, "NCIS", 72108)
+    index = build_watch_index(
+        [PlexShow("50", "The Office (US)", 73244), PlexShow("51", "NCIS", 72108)],
+        [{
+            "type": "episode",
+            "grandparentTitle": "The Office (US)",
+            "viewedAt": int(NOW.timestamp()) - 3600,
+        }],
+        [],
+        history_complete=False,
+        overrides={},
+        now=NOW,
+    )
+    sonarr = FakeSonarr()
+    report = execute(
+        [office, ncis],
+        index,
+        sonarr,
+        _state(tmp_path),
+        policy(dry_run=False),
+        NOW,
+        set(),
+        set(),
+    )
+    by_id = {result.sonarr_id: result for result in report.results}
+    assert by_id[1].action == "hold"
+    assert by_id[2].action == "skip"
+    assert "incomplete" in by_id[2].reason
+    assert sonarr.deleted == []
+
+
 def test_page_has_the_preview_and_one_show_actions():
     page = (Path(__file__).resolve().parents[1] / "app" / "status_page.html").read_text(encoding="utf-8")
     for text in (
@@ -272,5 +360,6 @@ def test_page_has_the_preview_and_one_show_actions():
         "delete-later",
         "download-later",
         "/ignore",
+        "Other shows were still judged.",
     ):
         assert text in page

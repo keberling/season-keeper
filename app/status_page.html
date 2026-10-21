@@ -532,8 +532,11 @@
         notes.push(`<div class="warn">Plex history did not cover the full ${days}-day window, so nothing is queued for deletion this run.</div>`);
       }
       if (current && current.ambiguous_plays && current.ambiguous_plays.length) {
-        const names = current.ambiguous_plays.slice(0, 5).map(esc).join(", ");
-        notes.push(`<div class="warn">Some recent Plex plays had no show id (${names}). Those shows were left alone.</div>`);
+        const plays = current.ambiguous_plays;
+        const names = plays.slice(0, 5).map(esc).join(", ");
+        const extra = plays.length > 5 ? ` and ${plays.length - 5} more` : "";
+        const noun = plays.length === 1 ? "play" : "plays";
+        notes.push(`<div class="warn">${plays.length} recent Plex ${noun} had no show id (${names}${extra}). A play was kept only when its title matched a library show. Other shows were still judged.</div>`);
       }
       warnings.innerHTML = notes.join("");
 

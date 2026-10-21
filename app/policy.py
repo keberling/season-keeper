@@ -7,8 +7,9 @@ Rules:
 - Any other play inside the window leaves the files alone.
 - No play inside the window, and a complete Plex history, unmonitors and
   deletes every season that is not kept.
-- A series that is not matched to Plex, or a history scan that is incomplete,
-  is left alone.
+- A series that is not matched to Plex is left alone.
+- A history scan that stops before the window is covered leaves every series
+  alone. Plays with no show id do not. A title match can only hold a show.
 """
 
 from __future__ import annotations
@@ -91,11 +92,25 @@ def _quiet(action: str, reason: str) -> Decision:
     )
 
 
+def _latest_play_has_unknown_season(watch: ShowWatch) -> bool:
+    if watch.unknown_season_at is None:
+        return False
+    if watch.last_viewed_at is None:
+        return True
+    return watch.unknown_season_at >= watch.last_viewed_at
+
+
 def _hold(watch: ShowWatch, now: datetime) -> Decision:
     if watch.active_seasons:
         who = f" ({', '.join(watch.active_users)})" if watch.active_users else ""
         playing = season_list(sorted(watch.active_seasons))
         reason = f"Season {playing} is playing now{who}. Files were left in place."
+    elif _latest_play_has_unknown_season(watch):
+        when = watch.unknown_season_at or watch.last_viewed_at
+        reason = (
+            f"Last play was {ago(when, now)}, and the season was not known. "
+            "Files were left in place."
+        )
     elif watch.last_viewed_at is not None:
         reason = (
             f"Last play was {ago(watch.last_viewed_at, now)}, outside season 1. "

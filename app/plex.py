@@ -1,8 +1,9 @@
 """Plex library matching and watch activity.
 
-Matching is by TVDB id. Plays that cannot be tied to a show do not cause a
-delete. If the history pages stop before the watch window is covered, pruning
-is disabled for that run.
+Matching is by TVDB id. A play with no show id does not block deletes of other
+shows. If that play's show title matches one or more library shows, those
+shows are held and are not searched. If the history pages stop before the
+watch window is covered, pruning is disabled for that run.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from app.progress import Progress, count_phrase, report
 logger = logging.getLogger("season_keeper.plex")
 
 _TVDB = re.compile(r"(?:thetvdb|tvdb)://(\d+)", re.IGNORECASE)
+_METADATA_ID = re.compile(r"/library/metadata/(\d+)")
 
 
 class PlexError(RuntimeError):
@@ -64,6 +66,44 @@ def parse_season(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def rating_key_from_path(value: Any) -> str | None:
+    """Plex id from a rating key or a `/library/metadata/{id}` path."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return str(value)
+    text = str(value).strip()
+    if text.isdigit():
+        number = int(text)
+        if number <= 0:
+            return None
+        return str(number)
+    match = _METADATA_ID.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def copy_direct_ids(item: dict) -> None:
+    """Fill show and episode ids from key paths when Plex omitted the rating keys."""
+    existing = item.get("grandparentRatingKey")
+    if existing:
+        normalized = rating_key_from_path(existing)
+        if normalized:
+            item["grandparentRatingKey"] = normalized
+    else:
+        show_id = rating_key_from_path(item.get("grandparentKey"))
+        if show_id:
+            item["grandparentRatingKey"] = show_id
+    if not item.get("ratingKey"):
+        episode_id = rating_key_from_path(item.get("key"))
+        show_id = str(item.get("grandparentRatingKey") or "")
+        if episode_id and episode_id != show_id:
+            item["ratingKey"] = episode_id
 
 
 def container_items(payload: dict, *keys: str) -> tuple[list[dict], int | None]:
@@ -133,11 +173,30 @@ def build_watch_index(
 
     activities: dict[int, ShowActivity] = {}
     ambiguous: list[str] = []
+    titles: dict[str, list[int]] = {}
+    for show in shows:
+        tvdb_id = rating_to_tvdb.get(show.rating_key)
+        if tvdb_id is None:
+            continue
+        bucket = titles.setdefault(show.title.strip(), [])
+        if tvdb_id not in bucket:
+            bucket.append(tvdb_id)
 
     def activity_for(tvdb_id: int) -> ShowActivity:
         return activities.setdefault(tvdb_id, ShowActivity())
 
+    def hold_exact_title(item: dict, viewed: datetime) -> None:
+        """A keyless play may keep a show, and it must not cause a search."""
+        raw_title = item.get("grandparentTitle")
+        if not isinstance(raw_title, str) or not raw_title.strip():
+            return
+        for tvdb_id in titles.get(raw_title.strip(), []):
+            row = activity_for(tvdb_id)
+            row.last_viewed_at = _bump(row.last_viewed_at, viewed)
+            row.unknown_season_at = _bump(row.unknown_season_at, viewed)
+
     def note_play(item: dict, *, active: bool) -> None:
+        copy_direct_ids(item)
         if item.get("type") not in (None, "episode"):
             return
         if item.get("type") is None and not item.get("grandparentRatingKey"):
@@ -145,15 +204,16 @@ def build_watch_index(
         title = str(item.get("grandparentTitle") or item.get("title") or "unknown episode")
         rating_key = item.get("grandparentRatingKey")
         season = parse_season(item.get("parentIndex"))
+        viewed = now
+        if not active and item.get("viewedAt") is not None:
+            viewed = datetime.fromtimestamp(int(item["viewedAt"]), timezone.utc)
         if not rating_key:
             ambiguous.append(title)
+            hold_exact_title(item, viewed)
             return
         tvdb_id = rating_to_tvdb.get(str(rating_key))
         if tvdb_id is None:
             return
-        viewed = now
-        if not active and item.get("viewedAt") is not None:
-            viewed = datetime.fromtimestamp(int(item["viewedAt"]), timezone.utc)
         row = activity_for(tvdb_id)
         row.last_viewed_at = _bump(row.last_viewed_at, viewed)
         if active:
@@ -299,6 +359,7 @@ class PlexClient:
                 "/status/sessions/history/all",
                 params={
                     "sort": "viewedAt:desc",
+                    "includeGuids": 1,
                     "X-Plex-Container-Start": start,
                     "X-Plex-Container-Size": self.page_size,
                 },
@@ -344,8 +405,25 @@ class PlexClient:
         return items
 
     def _enrich(self, items: list[dict], progress: Progress | None = None) -> list[dict]:
+        """Resolve show ids for every episode row. A lookup cap is not applied.
+
+        `hydrate_limit` remains on the client so older environment values still
+        load. Stopping after that many lookups left later plays without a show
+        id, which used to block deletes for the whole library.
+        """
+        for item in items:
+            copy_direct_ids(item)
+        already = sum(
+            1
+            for item in items
+            if item.get("type") in (None, "episode") and item.get("grandparentRatingKey")
+        )
         hydrated = 0
         lookups = 0
+        logger.debug(
+            "Resolving every episode id in this window (hydrate_limit=%s is not a cap)",
+            self.hydrate_limit,
+        )
         for item in items:
             if item.get("type") not in (None, "episode"):
                 continue
@@ -354,16 +432,12 @@ class PlexClient:
             rating_key = item.get("ratingKey")
             if not rating_key:
                 continue
-            if hydrated >= self.hydrate_limit:
-                logger.warning(
-                    "Plex history still has rows without a season after %s metadata lookups",
-                    self.hydrate_limit,
-                )
-                break
+            had_show = bool(item.get("grandparentRatingKey"))
             try:
                 meta = self._metadata(str(rating_key))
             except PlexError as exc:
                 if exc.status == 404:
+                    item["historyDeleted"] = True
                     lookups += 1
                     report(
                         progress,
@@ -373,7 +447,6 @@ class PlexClient:
                     continue
                 raise
             lookups += 1
-            hydrated += 1
             report(
                 progress,
                 f"Filling in play details, {count_phrase(lookups, 'lookup')}.",
@@ -381,14 +454,26 @@ class PlexClient:
             )
             if not meta:
                 continue
-            if not item.get("grandparentRatingKey"):
+            if not item.get("grandparentRatingKey") and meta.get("grandparentRatingKey"):
                 item["grandparentRatingKey"] = meta.get("grandparentRatingKey")
-            if parse_season(item.get("parentIndex")) is None:
+                if not had_show:
+                    hydrated += 1
+            if parse_season(item.get("parentIndex")) is None and meta.get("parentIndex") is not None:
                 item["parentIndex"] = meta.get("parentIndex")
             item.setdefault("grandparentTitle", meta.get("grandparentTitle"))
             item.setdefault("type", meta.get("type") or "episode")
-        if hydrated:
-            logger.info("Loaded Plex metadata for %s history rows that omitted a season", hydrated)
+        unresolved = sum(
+            1
+            for item in items
+            if item.get("type") == "episode" and not item.get("grandparentRatingKey")
+        )
+        logger.info(
+            "Plex history: %s plays in the window, %s already had a show id, %s hydrated, %s still unresolved",
+            len(items),
+            already,
+            hydrated,
+            unresolved,
+        )
         return items
 
     def _metadata(self, rating_key: str) -> dict | None:
