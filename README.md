@@ -1,6 +1,6 @@
-# Season Keeper
+# Trimarr
 
-Season Keeper watches every series in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them. A show tagged `keep-all` is left alone by that schedule.
+Trimarr watches every series in Sonarr. It keeps season 1. When nobody has played the show for 90 days, it unmonitors every other season and deletes those episode files. When someone plays season 1, it monitors the later seasons and asks Sonarr to search for them. A show tagged `keep-all` is left alone by that schedule.
 
 Open the page at `http://<unraid-ip>:8787`. The first screen asks you to open **Admin** and enter Sonarr and Plex. The schedule stays in preview until you choose **Live** on that page and save. From the library page you can delete the later seasons of one show, check the result, and send that show back to Sonarr to download again.
 
@@ -24,12 +24,12 @@ Matching uses the TVDB id Sonarr stores and the TVDB guid on the Plex show. A mo
 
 ## Install on Unraid
 
-The image is `ghcr.io/keberling/season-keeper:latest`. Sonarr and Plex are entered on the Admin page after the container is running. The template asks for the port, the appdata folder, and the container user.
+The image is `ghcr.io/keberling/trimarr:latest`. The same build is also published as `ghcr.io/keberling/season-keeper:latest` during the transition. Sonarr and Plex are entered on the Admin page after the container is running. The template asks for the port, the appdata folder, and the container user. Keep the existing appdata folder: `settings.json` and `season-keeper.sqlite` in `/data` load unchanged.
 
 Plex on Unraid is often on the host network, and Sonarr is often on a bridge port. From this container, `localhost` is the container itself. Use the Unraid server IP for both URLs.
 
 1. Copy `unraid/my-season-keeper.xml` to the flash drive at `/boot/config/plugins/dockerMan/templates-user/my-season-keeper.xml`. From Windows that share is `\\unraid\flash\config\plugins\dockerMan\templates-user\`.
-2. In Unraid, open Docker, then Add Container. Choose the `season-keeper` template.
+2. In Unraid, open Docker, then Add Container. Choose the `Trimarr` template.
 3. Set the restart policy to Unless Stopped. Apply.
 4. Open the WebUI. On Admin, enter the Sonarr URL and API key, and the Plex URL and server-owner token. Leave **Preview** selected. Save.
 5. Press **Test connection**. Both sides should report OK.
@@ -37,7 +37,7 @@ Plex on Unraid is often on the host network, and Sonarr is often on a bridge por
 
 Sonarr's API key is under Settings, General. The Plex token has to be the server owner's token so the server history includes every account.
 
-Other people can add `https://github.com/keberling/season-keeper` under Apps, Settings, Template repositories. Season Keeper then shows up in the Apps tab from the same XML file.
+Other people can add `https://github.com/keberling/season-keeper` under Apps, Settings, Template repositories. Trimarr then shows up in the Apps tab from the same XML file.
 
 To build on the server instead of pulling the image:
 
@@ -113,7 +113,7 @@ The admin page writes `settings.json` in the data folder. That file contains the
 ## Logs
 
 ```bash
-docker logs -f season-keeper
+docker logs -f trimarr
 ```
 
 A delete line looks like `Deleted 22 episode file(s) for The Office (2005)`. In preview mode those lines are not written, because no files are deleted.

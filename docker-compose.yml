@@ -1,9 +1,9 @@
 # Sonarr, Plex, and the preview/live switch are saved from the Admin page.
 services:
-  season-keeper:
+  trimarr:
     build: .
-    image: season-keeper:latest
-    container_name: season-keeper
+    image: trimarr:latest
+    container_name: trimarr
     restart: unless-stopped
     ports:
       - "${PORT:-8787}:8787"

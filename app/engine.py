@@ -24,7 +24,7 @@ from app.progress import Progress, report
 from app.sonarr import series_update_payload
 from app.state import State
 
-logger = logging.getLogger("season_keeper")
+logger = logging.getLogger("trimarr")
 
 
 class SafetyError(RuntimeError):

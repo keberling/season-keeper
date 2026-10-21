@@ -26,7 +26,9 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/keberling/trimarr
+            ghcr.io/keberling/season-keeper
           tags: |
             type=raw,value=latest
 
@@ -35,15 +37,18 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.title=Trimarr
 
-      - name: Make the package public
+      - name: Make the packages public
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          name="${GITHUB_REPOSITORY#*/}"
-          gh api --method PATCH \
-            -H "Accept: application/vnd.github+json" \
-            "/user/packages/container/${name}/visibility" \
-            -f visibility=public
+          for name in trimarr season-keeper; do
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/${name}/visibility" \
+              -f visibility=public
+          done

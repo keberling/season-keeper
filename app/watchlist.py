@@ -12,7 +12,7 @@ import httpx
 from app.config import Settings
 from app.plex import extract_guids, tvdb_from_guids
 
-logger = logging.getLogger("season_keeper.watchlist")
+logger = logging.getLogger("trimarr.watchlist")
 
 DISCOVER_HOST = "https://discover.provider.plex.tv"
 METADATA_HOST = "https://metadata.provider.plex.tv"
@@ -165,9 +165,9 @@ def _plex_headers(token: str) -> dict[str, str]:
     return {
         "Accept": "application/json",
         "X-Plex-Token": token,
-        "X-Plex-Product": "Season Keeper",
+        "X-Plex-Product": "Trimarr",
         "X-Plex-Version": "1.0.0",
-        "X-Plex-Client-Identifier": "season-keeper",
+        "X-Plex-Client-Identifier": "trimarr",
     }
 
 

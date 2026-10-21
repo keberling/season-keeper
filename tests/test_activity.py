@@ -62,7 +62,7 @@ def test_cycle_summary_is_one_readable_sentence():
 
 
 def test_a_live_delete_is_one_log_line_and_an_activity_row(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="season_keeper")
+    caplog.set_level(logging.INFO, logger="trimarr")
     state = State(tmp_path / "state.sqlite")
     apply_decision(
         office(),
@@ -104,7 +104,7 @@ def test_an_approved_delete_uses_the_approval_word(tmp_path):
 
 
 def test_a_restore_says_someone_watched(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="season_keeper")
+    caplog.set_level(logging.INFO, logger="trimarr")
     series = make_series(
         [episode(1, 1, 1, file_id=11), episode(2, 2, 1, aired=True)],
         season_monitored={1: True, 2: False},
@@ -133,7 +133,7 @@ def test_a_restore_says_someone_watched(tmp_path, caplog):
 
 
 def test_preview_writes_a_cycle_and_does_not_pretend_it_deleted(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="season_keeper")
+    caplog.set_level(logging.INFO, logger="trimarr")
     state = State(tmp_path / "state.sqlite")
     execute(
         [office()],

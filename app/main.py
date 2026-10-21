@@ -41,13 +41,30 @@ from app.service import (
 from app.sonarr import SonarrClient, SonarrError
 from app.state import State
 
-logger = logging.getLogger("season_keeper")
+logger = logging.getLogger("trimarr")
 PAGE = Path(__file__).with_name("status_page.html").read_text(encoding="utf-8")
 ADMIN_PAGE = Path(__file__).with_name("admin_page.html").read_text(encoding="utf-8")
 STATS_PAGE = Path(__file__).with_name("stats_page.html").read_text(encoding="utf-8")
 THEME = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
 NO_STORE = {"Cache-Control": "no-store"}
 _SETUP_REQUIRED = "Save Sonarr and Plex on the admin page first"
+_DB_NAME = "trimarr.sqlite"
+_LEGACY_DB_NAME = "season-keeper.sqlite"
+
+
+def database_path(data_dir: Path) -> Path:
+    """Open an existing database in place. New installs create trimarr.sqlite.
+
+    A data folder that already has season-keeper.sqlite keeps using that file,
+    including its WAL files. settings.json is not renamed.
+    """
+    current = data_dir / _DB_NAME
+    legacy = data_dir / _LEGACY_DB_NAME
+    if current.exists():
+        return current
+    if legacy.exists():
+        return legacy
+    return current
 
 
 class Holder:
@@ -252,7 +269,7 @@ def _require_token(request: Request) -> None:
 
 def _require_ready() -> Settings:
     if holder.settings is None or holder.state is None:
-        raise HTTPException(status_code=503, detail="Season Keeper is still starting")
+        raise HTTPException(status_code=503, detail="Trimarr is still starting")
     return holder.settings
 
 
@@ -335,11 +352,11 @@ async def lifespan(app: FastAPI):
     configure_logging(runtime.log_level)
     settings = load_settings()
     holder.settings = settings
-    holder.state = State(settings.data_dir / "season-keeper.sqlite")
+    holder.state = State(database_path(settings.data_dir))
     if settings.configured:
         mode = "preview only" if settings.dry_run else "live"
         logger.info(
-            "Season Keeper is %s. Ignore tag=%s window=%s days interval=%s minutes",
+            "Trimarr is %s. Ignore tag=%s window=%s days interval=%s minutes",
             mode,
             settings.ignore_tag,
             settings.watch_window_days,
@@ -359,7 +376,7 @@ async def lifespan(app: FastAPI):
         holder.scheduler = None
 
 
-app = FastAPI(title="Season Keeper", lifespan=lifespan)
+app = FastAPI(title="Trimarr", lifespan=lifespan)
 
 
 @app.get("/health")

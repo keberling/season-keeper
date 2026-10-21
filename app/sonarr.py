@@ -11,7 +11,7 @@ import httpx
 
 from app.models import EpisodeSnapshot, SeasonSnapshot, SeriesSnapshot
 
-logger = logging.getLogger("season_keeper.sonarr")
+logger = logging.getLogger("trimarr.sonarr")
 
 
 class SonarrError(RuntimeError):
