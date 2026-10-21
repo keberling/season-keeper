@@ -80,7 +80,7 @@
     .hint { margin: 0; color: var(--faint); font-size: 0.85rem; }
     .hint.ok { color: var(--green); }
     .hint.bad { color: var(--red); }
-    input[type="text"], input[type="password"], input[type="number"], select {
+    input[type="text"], input[type="password"], input[type="number"], input[type="search"], select {
       width: 100%;
       background: var(--bg-sunken);
       border: 1px solid var(--line);
@@ -111,6 +111,16 @@
     }
     .warn p { margin: 0; }
     .check { display: flex; gap: 8px; align-items: flex-start; }
+    .scope-list {
+      max-height: 280px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      background: var(--bg-sunken);
+      margin: 8px 0 12px;
+    }
+    .scope-list label { padding: 4px 0; }
     .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center; }
     #result { margin-right: auto; flex: 1 1 220px; }
     .token { display: flex; gap: 8px; align-items: center; color: var(--muted); }
@@ -181,15 +191,20 @@
             <input type="radio" name="run-mode" value="live">
             <span>
               <strong>Live</strong>
-              <p>On the schedule, every idle show loses later seasons, except shows with the ignore tag. A season 1 play asks Sonarr to search.</p>
+              <p>On the schedule, a season 1 play asks Sonarr to search. Deletes run only when approval is off, and only for shows in the live scope.</p>
             </span>
           </label>
         </div>
+        <label class="check">
+          <input id="approval" type="checkbox" checked>
+          <span>Require approval before deleting</span>
+        </label>
+        <p class="hint">On by default, including for a settings file that never had this switch. Live still searches when season 1 is played. Deletes and unmonitors wait until you approve that show.</p>
         <div id="live-warn" class="warn" hidden>
-          <p>Live deletes later-season files for every show with no play in the watch window, except shows with the ignore tag, and asks Sonarr to download them again when season 1 is played. Season 1 stays.</p>
+          <p id="live-warn-copy">Live will ask Sonarr to monitor later seasons and search when season 1 is played. Nothing is deleted until you approve that show.</p>
           <label class="check" id="live-confirm-row">
             <input id="live-confirm" type="checkbox">
-            <span>The schedule may delete later-season files</span>
+            <span id="live-confirm-label">The schedule may search and download later seasons. Deletes wait for approval.</span>
           </label>
         </div>
         <div class="pair">
@@ -243,6 +258,14 @@
         </label>
       </div>
       <div class="card">
+        <h2>Live shows</h2>
+        <p>Empty means every show. Check a show to limit Live to that set. Everything else stays in preview, including restores. You can also use Live for this show only on a library card.</p>
+        <p id="scope-summary" class="hint">No shows selected. Live applies to every show.</p>
+        <input id="scope-search" type="search" placeholder="Search shows" aria-label="Search shows in the live scope">
+        <div id="scope-list" class="scope-list"></div>
+        <button id="scope-clear" class="ghost" type="button">Clear, so every show is live</button>
+      </div>
+      <div class="card">
         <h2>Access token</h2>
         <p>Optional. When set, the library page and this page ask for it before a change. Leave the field blank to keep the saved token.</p>
         <label class="field">
@@ -262,7 +285,13 @@
     </form>
   </main>
   <script>
-    const state = { loaded: null };
+    const state = { loaded: null, shows: [] };
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
     const authInput = document.getElementById("auth-token");
     authInput.value = sessionStorage.getItem("sk-token") || "";
     authInput.addEventListener("change", () => {
@@ -305,16 +334,33 @@
       return picked ? picked.value : "preview";
     }
 
+    function approvalOn() {
+      return document.getElementById("approval").checked;
+    }
+
     function syncMode() {
       const live = selectedMode() === "live";
       const alreadyLive = state.loaded && state.loaded.configured && state.loaded.dry_run === false;
+      const loadedApproval = !state.loaded || state.loaded.require_delete_approval !== false;
+      const turningApprovalOff = Boolean(alreadyLive && loadedApproval && !approvalOn());
+      const enteringLive = live && !alreadyLive;
+      const needsConfirm = enteringLive || turningApprovalOff;
       const warn = document.getElementById("live-warn");
       const row = document.getElementById("live-confirm-row");
       const box = document.getElementById("live-confirm");
+      const copy = document.getElementById("live-warn-copy");
+      const label = document.getElementById("live-confirm-label");
+      if (approvalOn()) {
+        copy.textContent = "Live will ask Sonarr to monitor later seasons and search when season 1 is played. Nothing is deleted until you approve that show.";
+        label.textContent = "The schedule may search and download later seasons. Deletes wait for approval.";
+      } else {
+        copy.textContent = "Live deletes later-season files for in-scope shows with no play in the watch window, except shows with the ignore tag, and asks Sonarr to download them again when season 1 is played. Season 1 stays.";
+        label.textContent = "The schedule may delete later-season files";
+      }
       warn.hidden = !live;
-      row.hidden = !live || alreadyLive;
+      row.hidden = !needsConfirm;
       if (row.hidden) box.checked = false;
-      document.getElementById("save").disabled = live && !alreadyLive && !box.checked;
+      document.getElementById("save").disabled = needsConfirm && !box.checked;
     }
 
     function payload() {
@@ -324,6 +370,7 @@
         plex_url: document.getElementById("plex-url").value.trim(),
         plex_token: document.getElementById("plex-token").value,
         dry_run: selectedMode() !== "live",
+        require_delete_approval: approvalOn(),
         watch_window_days: Number(document.getElementById("window").value),
         keep_seasons: document.getElementById("keep").value.trim(),
         ignore_tag: document.getElementById("tag").value.trim(),
@@ -352,6 +399,7 @@
       const live = data.configured && data.dry_run === false;
       const mode = document.querySelector('input[name="run-mode"][value="' + (live ? "live" : "preview") + '"]');
       if (mode) mode.checked = true;
+      document.getElementById("approval").checked = data.require_delete_approval !== false;
       document.getElementById("window").value = data.watch_window_days;
       document.getElementById("keep").value = data.keep_seasons || "1";
       const kept = (data.keep_seasons_effective || [1]).join(", ");
@@ -367,6 +415,52 @@
       clear.checked = false;
       clear.disabled = !data.app_token_set;
       syncMode();
+      renderScope();
+    }
+
+    function renderScope() {
+      const ids = new Set(((state.loaded && state.loaded.live_series_ids) || []).map(Number));
+      const query = (document.getElementById("scope-search").value || "").trim().toLowerCase();
+      const host = document.getElementById("scope-list");
+      const shows = state.shows || [];
+      if (!shows.length) {
+        host.innerHTML = `<p class="hint">No library report yet. Open the library, refresh, then come back. Or use Live for this show only on a card.</p>`;
+      } else {
+        host.innerHTML = shows.map((show) => {
+          const title = show.title + (show.year ? " (" + show.year + ")" : "");
+          const hidden = query && title.toLowerCase().indexOf(query) === -1 ? "hidden" : "";
+          const checked = ids.has(Number(show.id)) ? "checked" : "";
+          return `<label class="check" ${hidden}><input type="checkbox" data-scope-id="${show.id}" ${checked}><span>${esc(title)}</span></label>`;
+        }).join("");
+      }
+      const summary = document.getElementById("scope-summary");
+      summary.textContent = ids.size
+        ? ids.size + " show" + (ids.size === 1 ? "" : "s") + " in the live scope. Other shows stay in preview."
+        : "No shows selected. Live applies to every show.";
+    }
+
+    async function loadScope() {
+      try {
+        const status = await api("/api/status");
+        const rows = (status.report && status.report.series) || [];
+        state.shows = rows.map((row) => ({
+          id: row.sonarr_id,
+          title: row.title || ("Series " + row.sonarr_id),
+          year: row.year || null,
+        })).sort((a, b) => String(a.title).localeCompare(String(b.title)));
+      } catch (error) {
+        state.shows = [];
+      }
+      renderScope();
+    }
+
+    async function saveScope(ids) {
+      const data = await api("/api/live-scope", {
+        method: "POST",
+        body: JSON.stringify({ series_ids: ids }),
+      });
+      if (state.loaded) state.loaded.live_series_ids = data.live_series_ids || [];
+      renderScope();
     }
 
     function rememberToken(body) {
@@ -385,6 +479,7 @@
     async function load() {
       const data = await api("/api/settings");
       fill(data);
+      await loadScope();
     }
 
     async function save() {
@@ -395,7 +490,10 @@
         const data = await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
         rememberToken(body);
         fill(data);
-        report(data.dry_run ? "Saved. The schedule stays in preview." : "Saved. The schedule is live.", true);
+        const approval = data.require_delete_approval !== false ? " Approval is required before deletes." : " Deletes run without another prompt.";
+        const count = (data.live_series_ids || []).length;
+        const scope = count ? " Live scope is " + count + " show" + (count === 1 ? "" : "s") + "." : " Live scope is every show.";
+        report((data.dry_run ? "Saved. The schedule stays in preview." : "Saved. The schedule is live.") + approval + scope, true);
       } catch (error) {
         report(error.message, false);
         syncMode();
@@ -429,8 +527,30 @@
     });
     document.getElementById("test").addEventListener("click", testConnection);
     document.getElementById("live-confirm").addEventListener("change", syncMode);
+    document.getElementById("approval").addEventListener("change", syncMode);
     document.querySelectorAll('input[name="run-mode"]').forEach((input) => {
       input.addEventListener("change", syncMode);
+    });
+    document.getElementById("scope-search").addEventListener("input", renderScope);
+    document.getElementById("scope-list").addEventListener("change", async (event) => {
+      const box = event.target;
+      if (!box.matches || !box.matches("input[data-scope-id]")) return;
+      const ids = Array.from(document.querySelectorAll("#scope-list input[data-scope-id]:checked"))
+        .map((input) => Number(input.getAttribute("data-scope-id")));
+      try {
+        await saveScope(ids);
+      } catch (error) {
+        report(error.message, false);
+        box.checked = !box.checked;
+      }
+    });
+    document.getElementById("scope-clear").addEventListener("click", async () => {
+      try {
+        await saveScope([]);
+        report("Live scope cleared. Every show is in scope when Live is on.", true);
+      } catch (error) {
+        report(error.message, false);
+      }
     });
     document.getElementById("clear-token").addEventListener("change", () => {
       const clear = document.getElementById("clear-token").checked;

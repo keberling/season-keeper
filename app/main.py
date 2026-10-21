@@ -13,7 +13,7 @@ import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import (
     RuntimeSettings,
@@ -64,6 +64,23 @@ class ConfirmBody(BaseModel):
 
 class IgnoreBody(BaseModel):
     ignore: bool = True
+
+
+class LiveScopeBody(BaseModel):
+    series_ids: list[int] = []
+
+    @field_validator("series_ids")
+    @classmethod
+    def _series_ids(cls, value: list[int]) -> list[int]:
+        cleaned: list[int] = []
+        seen: set[int] = set()
+        for item in value:
+            if item <= 0:
+                raise ValueError("Live show ids must be positive")
+            if item not in seen:
+                seen.add(item)
+                cleaned.append(item)
+        return cleaned
 
 
 def configure_logging(level: str) -> None:
@@ -322,6 +339,8 @@ def _status_body() -> dict:
         "keep_seasons": sorted(settings.keep_season_numbers),
         "tag": settings.ignore_tag,
         "ignore_tag": settings.ignore_tag,
+        "require_delete_approval": settings.require_delete_approval,
+        "live_series_ids": list(settings.live_series_ids),
         "running": holder.running,
         "progress": holder.progress.snapshot() if holder.running else None,
         "next_run_at": next_run,
@@ -354,8 +373,10 @@ def write_settings(body: SettingsWrite, request: Request) -> JSONResponse:
     holder.settings = updated
     _arm_schedule(updated, first=not was_configured)
     logger.info(
-        "Saved settings. mode=%s ignore_tag=%s window=%s days interval=%s minutes",
+        "Saved settings. mode=%s approval=%s live_scope=%s ignore_tag=%s window=%s days interval=%s minutes",
         "preview" if updated.dry_run else "live",
+        "required" if updated.require_delete_approval else "off",
+        "all" if not updated.live_series_ids else len(updated.live_series_ids),
         updated.ignore_tag,
         updated.watch_window_days,
         updated.watch_interval_minutes,
@@ -369,6 +390,20 @@ def test_settings(body: SettingsWrite, request: Request) -> dict:
     _require_token(request)
     candidate = _accept_write(current, body)
     return probe_connections(candidate)
+
+
+@app.post("/api/live-scope")
+def write_live_scope(body: LiveScopeBody, request: Request) -> JSONResponse:
+    current = _require_ready()
+    _require_token(request)
+    updated = current.model_copy(update={"live_series_ids": body.series_ids})
+    try:
+        save_settings(updated)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not save settings") from exc
+    holder.settings = updated
+    logger.info("Live scope is now %s", body.series_ids or "every show")
+    return JSONResponse(public_settings(updated), headers=NO_STORE)
 
 
 @app.post("/api/run")
@@ -449,6 +484,31 @@ def delete_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
 @app.post("/api/series/{series_id}/download-later")
 def download_one(series_id: int, body: ConfirmBody, request: Request) -> dict:
     return _manual(request, series_id, body, download_later_seasons)
+
+
+@app.post("/api/series/{series_id}/dismiss")
+def dismiss_one(series_id: int, request: Request) -> dict:
+    """Hide a pending delete. The next cycle still will not delete the files."""
+    settings = _require_ready()
+    _require_token(request)
+    _require_configured(settings)
+    assert holder.state is not None
+    holder.state.dismiss(series_id, datetime.now(timezone.utc))
+    report = holder.state.load_report() or {}
+    row = None
+    for item in report.get("series") or []:
+        if int(item.get("sonarr_id") or 0) == series_id:
+            row = dict(item)
+            break
+    if row is None:
+        return {"sonarr_id": series_id, "dismissed": True, "pending_approval": False}
+    row["dismissed"] = True
+    row["pending_approval"] = False
+    reason = str(row.get("reason") or "")
+    if not reason.startswith("Dismissed."):
+        row["reason"] = "Dismissed. Files stay until you approve a delete. " + reason
+    holder.state.replace_series(row)
+    return row
 
 
 @app.post("/api/series/{series_id}/ignore")

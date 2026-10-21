@@ -32,6 +32,8 @@ STORED_FIELDS = (
     "monitor_new_items_when_active",
     "monitor_new_items_when_idle",
     "app_token",
+    "require_delete_approval",
+    "live_series_ids",
 )
 _CONNECTION_ENV = (
     ("SONARR_URL", "sonarr_url"),
@@ -85,6 +87,8 @@ class Settings(BaseModel):
     search_cooldown_hours: int = Field(default=6, ge=1, le=168)
     monitor_new_items_when_active: str = "all"
     monitor_new_items_when_idle: str = "none"
+    require_delete_approval: bool = True
+    live_series_ids: list[int] = Field(default_factory=list)
 
     port: int = Field(default=8787, ge=1, le=65535)
     data_dir: Path = Path("/data")
@@ -97,6 +101,27 @@ class Settings(BaseModel):
     hydrate_limit: int = Field(default=200, ge=0, le=5000)
     run_on_startup: bool = True
     startup_delay_seconds: int = Field(default=10, ge=0, le=3600)
+
+    @field_validator("live_series_ids", mode="before")
+    @classmethod
+    def _live_series_ids(cls, value: object) -> object:
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            raise ValueError("Live shows must be a list of Sonarr series ids")
+        numbers: list[int] = []
+        for item in value:
+            try:
+                number = int(item)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Live show ids must be integers") from exc
+            if number <= 0:
+                raise ValueError("Live show ids must be positive")
+            if number not in numbers:
+                numbers.append(number)
+        return numbers
 
     @field_validator("monitor_new_items_when_active", "monitor_new_items_when_idle")
     @classmethod
@@ -162,6 +187,8 @@ class Settings(BaseModel):
             search_cooldown=timedelta(hours=self.search_cooldown_hours),
             monitor_new_when_active=self.monitor_new_items_when_active,
             monitor_new_when_idle=self.monitor_new_items_when_idle,
+            require_delete_approval=self.require_delete_approval,
+            live_series_ids=frozenset(self.live_series_ids),
         )
 
 
@@ -183,6 +210,7 @@ class SettingsWrite(BaseModel):
     search_cooldown_hours: int | None = Field(default=None, ge=1, le=168)
     monitor_new_items_when_active: str | None = None
     monitor_new_items_when_idle: str | None = None
+    require_delete_approval: bool | None = None
     app_token: str = ""
     clear_app_token: bool = False
 
@@ -282,6 +310,9 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         monitor_new_items_when_idle=current.monitor_new_items_when_idle
         if update.monitor_new_items_when_idle is None
         else update.monitor_new_items_when_idle,
+        require_delete_approval=current.require_delete_approval
+        if update.require_delete_approval is None
+        else update.require_delete_approval,
         app_token=app_token,
     )
     return Settings.model_validate(data)
@@ -330,6 +361,8 @@ def public_settings(settings: Settings) -> dict:
         "search_cooldown_hours": settings.search_cooldown_hours,
         "monitor_new_items_when_active": settings.monitor_new_items_when_active,
         "monitor_new_items_when_idle": settings.monitor_new_items_when_idle,
+        "require_delete_approval": settings.require_delete_approval,
+        "live_series_ids": list(settings.live_series_ids),
         "app_token_set": bool(settings.app_token),
     }
 
@@ -388,6 +421,9 @@ def _bootstrap_from_env() -> dict | None:
     dry = os.environ.get("DRY_RUN", "").strip().lower()
     if dry:
         payload["dry_run"] = dry in {"1", "true", "yes", "on"}
+    approval = os.environ.get("REQUIRE_DELETE_APPROVAL", "").strip().lower()
+    if approval:
+        payload["require_delete_approval"] = approval in {"1", "true", "yes", "on"}
     _take_int(payload, "WATCH_WINDOW_DAYS", "watch_window_days")
     _take_int(payload, "WATCH_INTERVAL_MINUTES", "watch_interval_minutes")
     _take_int(payload, "SEARCH_COOLDOWN_HOURS", "search_cooldown_hours")
@@ -398,6 +434,7 @@ def _bootstrap_from_env() -> dict | None:
         ("MONITOR_NEW_ITEMS_WHEN_ACTIVE", "monitor_new_items_when_active"),
         ("MONITOR_NEW_ITEMS_WHEN_IDLE", "monitor_new_items_when_idle"),
         ("APP_TOKEN", "app_token"),
+        ("LIVE_SERIES_IDS", "live_series_ids"),
     ):
         if env_name in os.environ and os.environ[env_name].strip():
             payload[field] = os.environ[env_name].strip()

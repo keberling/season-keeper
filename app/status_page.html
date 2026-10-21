@@ -54,12 +54,12 @@
     .mode {
       border-radius: 999px;
       padding: 6px 10px;
-      font-size: 0.78rem;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+      font-size: 0.82rem;
+      letter-spacing: 0;
+      text-transform: none;
       font-weight: 700;
     }
-    .mode.preview { background: var(--amber); color: var(--amber-ink); }
+    .mode.preview, .mode.approval { background: var(--amber); color: var(--amber-ink); }
     .mode.live { background: var(--red-bg); color: var(--red); }
     button.primary, button.ghost, button.danger, button.good, a.ghost {
       border-radius: 10px;
@@ -312,6 +312,8 @@
     let pollGen = 0;
     const filters = [
       ["matched", "Matched"],
+      ["approval", "Needs approval"],
+      ["live", "Live scope"],
       ["prune", "Would delete"],
       ["restore", "Would download"],
       ["hold", "Watching"],
@@ -356,10 +358,25 @@
       return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
     }
 
+    function liveIds() {
+      const ids = state.status && state.status.live_series_ids;
+      return Array.isArray(ids) ? ids.map(Number) : [];
+    }
+
+    function approvalRequired() {
+      return !state.status || state.status.require_delete_approval !== false;
+    }
+
+    function previewMode() {
+      return !state.status || state.status.dry_run !== false;
+    }
+
     function badge(row) {
       if (row.error) return ["error", "Problem"];
       if (row.applied && row.action === "prune") return ["prune", "Deleted"];
       if (row.applied && row.action === "restore") return ["restore", "Sent to Sonarr"];
+      if (row.pending_approval) return ["prune", "Needs approval"];
+      if (row.dismissed && row.action === "prune") return ["skip", "Dismissed"];
       if (row.action === "prune") return ["prune", "Would delete"];
       if (row.action === "restore") return ["restore", "Would download"];
       if (row.action === "hold") return ["hold", "Watching"];
@@ -371,6 +388,12 @@
       if (state.filter === "all") return true;
       if (state.filter === "error") return Boolean(row.error);
       if (row.error) return false;
+      if (state.filter === "approval") return Boolean(row.pending_approval);
+      if (state.filter === "live") {
+        const ids = liveIds();
+        if (!ids.length) return !previewMode();
+        return ids.includes(Number(row.sonarr_id));
+      }
       if (state.filter === "matched") return ["prune", "restore", "hold"].includes(row.action);
       return row.action === state.filter;
     }
@@ -502,10 +525,27 @@
       const rows = seriesRows();
       const current = report();
       const needsSetup = Boolean(status && status.configured === false);
-      const preview = !status || status.dry_run;
+      const preview = !status || status.dry_run !== false;
+      const ids = liveIds();
+      const scopeText = ids.length
+        ? (ids.length + " show" + (ids.length === 1 ? "" : "s"))
+        : "all shows";
       const mode = document.getElementById("mode");
-      mode.textContent = needsSetup ? "Setup" : (preview ? "Preview" : "Live");
-      mode.className = "mode " + (needsSetup || preview ? "preview" : "live");
+      let modeText = "Preview";
+      let modeClass = "preview";
+      if (needsSetup) {
+        modeText = "Setup";
+      } else if (!preview && approvalRequired()) {
+        modeText = "Live · approval · " + scopeText;
+        modeClass = "approval";
+      } else if (!preview) {
+        modeText = "Live · deletes · " + scopeText;
+        modeClass = "live";
+      } else if (ids.length) {
+        modeText = "Preview · " + ids.length + " selected";
+      }
+      mode.textContent = modeText;
+      mode.className = "mode " + modeClass;
       const refreshButton = document.getElementById("refresh");
       refreshButton.textContent = needsSetup
         ? "Open admin"
@@ -519,11 +559,20 @@
         ? "Enter Sonarr and Plex on the Admin page. Season 1 stays."
         : `Season 1 stays. Other seasons are removed after ${days} days without a play, and downloaded again when season 1 starts.`;
 
-      document.getElementById("banner").innerHTML = needsSetup
-        ? `<strong>Setup.</strong> Sonarr and Plex are not saved yet. Open <a href="/admin">Admin</a> and enter them there. The schedule does not run, and nothing is deleted, until you save.`
-        : (preview
-          ? `<strong>Preview mode.</strong> The schedule reads Sonarr and Plex and changes nothing. The buttons on a show are the only actions that delete files or ask Sonarr to download, and each one asks you to confirm that one show. Ignore applies the ${esc(tag)} tag so the schedule skips that show.`
-          : `<strong>Live mode.</strong> Every ${interval} minutes, every show except those tagged ${esc(tag)} with no play in ${days} days loses every season except season ${esc((status.keep_seasons || [1]).join(", "))}. Season 1 stays. A season 1 play asks Sonarr to search.`);
+      const scopeSentence = ids.length
+        ? `Live scope is ${ids.length} show${ids.length === 1 ? "" : "s"}. Every other show stays in preview.`
+        : "Live scope is every show. Pick Live for this show only on a card to limit it.";
+      let banner;
+      if (needsSetup) {
+        banner = `<strong>Setup.</strong> Sonarr and Plex are not saved yet. Open <a href="/admin">Admin</a> and enter them there. The schedule does not run, and nothing is deleted, until you save.`;
+      } else if (preview) {
+        banner = `<strong>Preview mode.</strong> The schedule reads Sonarr and Plex and changes nothing. The buttons on a show are the only actions that delete files or ask Sonarr to download, and each one asks you to confirm that one show. Ignore applies the ${esc(tag)} tag so the schedule skips that show. ${scopeSentence}`;
+      } else if (approvalRequired()) {
+        banner = `<strong>Live mode. Approval required.</strong> Every ${interval} minutes, a season 1 play on a show in scope asks Sonarr to search. Deletes and unmonitors wait until you approve that show. ${scopeSentence}`;
+      } else {
+        banner = `<strong>Live mode. Deletes are on.</strong> Every ${interval} minutes, every in-scope show except those tagged ${esc(tag)} with no play in ${days} days loses every season except season ${esc((status.keep_seasons || [1]).join(", "))}. Season 1 stays. ${scopeSentence}`;
+      }
+      document.getElementById("banner").innerHTML = banner;
 
       const warnings = document.getElementById("warnings");
       const notes = [];
@@ -544,10 +593,12 @@
       const keptLabel = keep.length === 1 && Number(keep[0]) === 1 ? "Season 1 on disk" : "Kept seasons";
       const keptBytes = rows.reduce((sum, row) => sum + (Number(row.kept_bytes) || 0), 0);
       const free = wouldFree(rows);
+      const pendingCount = rows.filter((row) => row.pending_approval).length;
       const pruneCount = rows.filter((row) => row.action === "prune" && !row.applied && !row.error).length;
+      const counted = approvalRequired() && !preview ? pendingCount : pruneCount;
       const matchedCount = rows.filter((row) => !row.error && ["prune", "restore", "hold"].includes(row.action)).length;
       document.getElementById("stats").innerHTML = `
-        <div class="stat savings hero"><span>Available to save</span><strong>${formatBytes(free)}</strong><em>Would free this much from ${pruneCount} show${pruneCount === 1 ? "" : "s"} the rule would delete. Season 1 stays.</em></div>
+        <div class="stat savings hero"><span>Available to save</span><strong>${formatBytes(free)}</strong><em>${approvalRequired() && !preview ? "Waiting for approval on" : "Would free this much from"} ${counted} show${counted === 1 ? "" : "s"}. Season 1 stays.</em></div>
         <div class="stat"><span>${esc(keptLabel)}</span><strong>${formatBytes(keptBytes)}</strong><em>${rows.length} shows · ${matchedCount} matched · ignore tag ${esc(tag)}</em></div>
       `;
 
@@ -603,18 +654,36 @@
       const ignoreAct = ignored ? "include" : "ignore";
       const ignoreLabel = ignored ? "Include" : "Ignore";
       const watched = row.last_viewed_at ? when(row.last_viewed_at) : "";
+      const ids = liveIds();
+      const selected = ids.includes(Number(row.sonarr_id));
+      const liveNow = !previewMode() && (ids.length === 0 || selected);
+      const scopeLabel = ids.length === 0
+        ? "Live for this show only"
+        : (selected ? "Remove from live" : "Add to live");
+      const scopeTitle = ids.length === 0
+        ? "Limit Live to this show. Other shows stay in preview."
+        : (selected ? "Take this show out of the live scope." : "Add this show to the live scope.");
+      const liveMark = liveNow
+        ? `<span class="badge restore">Live</span>`
+        : (selected ? `<span class="badge hold">In scope</span>` : "");
+      const deleteButton = row.pending_approval
+        ? `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Approve</button>
+           <button type="button" class="ghost" data-act="dismiss" data-id="${row.sonarr_id}">Dismiss</button>`
+        : `<button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Delete later</button>`;
       return `<article class="show ${kind}">
         <div class="show-head">
           <h2>${title}</h2>
           <span class="badge ${kind}">${label}</span>
+          ${liveMark}
         </div>
         <p class="reason">${esc(row.reason || "")}</p>
         <p class="tile-size ${sizeKind}"><span>${esc(sizeLabel)}</span><strong>${esc(sizeValue)}</strong></p>
         <p class="meta-line">${row.kept_episode_count || 0} season 1 ep · ${row.later_episode_count || 0} later${watched ? ` · ${esc(watched)}` : ""}</p>
         ${row.applied ? `<p class="meta-line">This card is the action that just ran. Refresh to read Sonarr again.</p>` : ""}
         <div class="row-actions">
-          <button type="button" class="danger" data-act="delete" data-id="${row.sonarr_id}" aria-label="Test delete on this show">Delete later</button>
+          ${deleteButton}
           <button type="button" class="good" data-act="download" data-id="${row.sonarr_id}" aria-label="Download later seasons">Download</button>
+          <button type="button" class="ghost" data-act="scope" data-id="${row.sonarr_id}" title="${esc(scopeTitle)}">${scopeLabel}</button>
           <button type="button" class="ghost" data-act="${ignoreAct}" data-id="${row.sonarr_id}">${ignoreLabel}</button>
         </div>
       </article>`;
@@ -725,7 +794,7 @@
         render();
         const current = report();
         if (current && current.error) toast(current.error);
-        else toast("Preview updated.");
+        else toast(state.status && state.status.dry_run === false ? "Run finished." : "Preview updated.");
       } catch (error) {
         toast(error.message);
         try {
@@ -764,6 +833,43 @@
       }
     }
 
+    async function dismissShow(seriesId, button) {
+      button.disabled = true;
+      try {
+        await api(`/api/series/${seriesId}/dismiss`, { method: "POST", body: "{}" });
+        await load();
+        toast("Dismissed. Files stay until you approve a delete.");
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    }
+
+    async function setScope(seriesId, button) {
+      const id = Number(seriesId);
+      const current = liveIds();
+      let next;
+      if (!current.length) next = [id];
+      else if (current.includes(id)) next = current.filter((item) => item !== id);
+      else next = current.concat([id]);
+      button.disabled = true;
+      try {
+        const saved = await api("/api/live-scope", {
+          method: "POST",
+          body: JSON.stringify({ series_ids: next }),
+        });
+        if (state.status) state.status.live_series_ids = saved.live_series_ids || [];
+        render();
+        const count = (saved.live_series_ids || []).length;
+        toast(count
+          ? `Live scope is ${count} show${count === 1 ? "" : "s"}.`
+          : "Live scope cleared. Every show is in scope once Live is on.");
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    }
+
     document.getElementById("shows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-act]");
       if (!button) return;
@@ -771,6 +877,14 @@
       const seriesId = button.getAttribute("data-id");
       if (act === "ignore" || act === "include") {
         setIgnore(act === "ignore", seriesId, button);
+        return;
+      }
+      if (act === "dismiss") {
+        dismissShow(seriesId, button);
+        return;
+      }
+      if (act === "scope") {
+        setScope(seriesId, button);
         return;
       }
       openModal(act, seriesId);
