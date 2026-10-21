@@ -4,89 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Season Keeper Admin</title>
+  <link rel="stylesheet" href="/theme.css">
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #121410;
-      --bg-raise: #1b1e19;
-      --bg-sunken: #10120e;
-      --line: #31362c;
-      --text: #f4f1e8;
-      --muted: #b7bbae;
-      --faint: #8d9284;
-      --amber: #f0b429;
-      --amber-ink: #2a210c;
-      --green: #b7d39a;
-      --green-bg: #243024;
-      --red: #ffb4a8;
-      --red-bg: #3a221c;
-      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background:
-        radial-gradient(1200px 400px at 10% -10%, rgba(240, 180, 41, 0.08), transparent 50%),
-        var(--bg);
-      color: var(--text);
-      font: 16px/1.45 "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
-    }
-    button, input, select { font: inherit; color: inherit; }
-    button { cursor: pointer; }
-    a { color: var(--amber); }
-    [hidden] { display: none !important; }
-    ::placeholder { color: var(--faint); }
-    .wrap { width: min(880px, calc(100% - 32px)); margin: 0 auto; }
-    header.top {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      backdrop-filter: blur(14px);
-      background: rgba(18, 20, 16, 0.9);
-      border-bottom: 1px solid var(--line);
-    }
-    .top-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 16px 0; }
-    .brand h1 { margin: 0; font-size: 1.25rem; letter-spacing: -0.03em; }
-    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 0.92rem; }
-    .top-actions { display: flex; gap: 8px; align-items: center; }
-    a.ghost, button.primary, button.ghost {
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      padding: 9px 12px;
-      background: transparent;
-      text-decoration: none;
-      color: inherit;
-    }
-    button.primary { background: var(--text); color: #16180f; border-color: transparent; font-weight: 650; }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
-      outline: 2px solid var(--amber);
-      outline-offset: 2px;
-    }
-    main { padding: 22px 0 64px; display: grid; gap: 16px; }
-    form { display: grid; gap: 16px; }
-    .banner, .card {
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: var(--bg-raise);
-      padding: 16px 18px;
-    }
-    .banner p, .card p { margin: 0; color: var(--muted); }
-    .card { display: grid; gap: 14px; }
-    .card h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.02em; }
+    main { padding: 16px 0 64px; display: grid; gap: 14px; }
+    .wrap { width: min(880px, calc(100% - 32px)); }
+    form { display: grid; gap: 14px; }
+    .card { padding: 16px 18px; display: grid; gap: 14px; }
+    .card h2 { margin: 0; font-size: 1.15rem; }
+    .card p, .banner p { margin: 0; }
     .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     label.field { display: grid; gap: 6px; }
     label.field > span, .choice strong { font-size: 0.92rem; }
+    label.field input, label.field select { width: 100%; }
     .hint { margin: 0; color: var(--faint); font-size: 0.85rem; }
     .hint.ok { color: var(--green); }
     .hint.bad { color: var(--red); }
-    input[type="text"], input[type="password"], input[type="number"], input[type="search"], select {
-      width: 100%;
-      background: var(--bg-sunken);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px 12px;
-    }
     .choices { display: flex; gap: 10px; flex-wrap: wrap; }
     .choice {
       flex: 1 1 240px;
@@ -100,17 +32,8 @@
     }
     .choice input { margin-top: 4px; }
     .choice p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
-    .warn {
-      border: 1px solid #6a5420;
-      background: #241e12;
-      border-radius: 12px;
-      padding: 12px;
-      color: var(--text);
-      display: grid;
-      gap: 10px;
-    }
+    .warn { display: grid; gap: 10px; }
     .warn p { margin: 0; }
-    .check { display: flex; gap: 8px; align-items: flex-start; }
     .scope-list {
       max-height: 280px;
       overflow: auto;
@@ -123,8 +46,8 @@
     .scope-list label { padding: 4px 0; }
     .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center; }
     #result { margin-right: auto; flex: 1 1 220px; }
-    .token { display: flex; gap: 8px; align-items: center; color: var(--muted); }
-    .token input { width: 180px; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+    .token { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 0.86rem; }
+    .token input { width: 180px; }
     @media (max-width: 700px) {
       .pair { grid-template-columns: 1fr; }
       .top-row { align-items: flex-start; flex-direction: column; }
