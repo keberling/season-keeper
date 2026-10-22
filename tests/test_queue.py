@@ -498,6 +498,12 @@ def test_pages_expose_the_queue_and_delete_speed():
     assert "actions queued" in status
     assert 'id="tasks"' in status
     assert "setInterval(pollQueue, 3000)" in status
+    assert 'id="tasks-block"' in status
+    assert 'id="tasks-caps"' in status
+    assert 'id="tasks-next"' in status
+    assert "paintCountdown" in status
+    assert "Waiting on the " in status
+    assert "Last error:" in status
     assert "Queue season deletion" in status
     assert "Download missing seasons" in status
     assert "Wait between deletes (seconds)" in admin_text

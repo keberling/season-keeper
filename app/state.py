@@ -9,7 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.models import RunReport, summarize_dicts
-from app.queue_limit import RESTORE_CANCEL, deletion_allowed
+from app.queue_limit import (
+    BLOCK_LOG_INTERVAL_SECONDS,
+    CAP_BLOCKS,
+    JOB_MAX_ATTEMPTS,
+    PRIORITY_SOON,
+    RESTORE_CANCEL,
+    deletion_allowed,
+)
 
 
 class State:
@@ -124,7 +131,7 @@ class State:
         )
         self._conn.commit()
         self._migrate_jobs()
-        self.requeue_interrupted()
+        self.restored_queue = self.requeue_interrupted(max_attempts=JOB_MAX_ATTEMPTS)
 
     def close(self) -> None:
         with self._lock:
@@ -593,18 +600,55 @@ class State:
         )
         self._conn.commit()
 
-    def requeue_interrupted(self) -> int:
-        """A restart left these jobs marked running. Put them back without burning an attempt."""
+    def requeue_interrupted(self, max_attempts: int = JOB_MAX_ATTEMPTS) -> dict:
+        """Put interrupted jobs back. A job that already used its attempts is failed.
+
+        Queued jobs are left as they are. The attempt count is not increased:
+        the process stopped before that try finished, and a later try still
+        counts against the limit.
+        """
+        now = datetime.now(timezone.utc).isoformat()
         with self._lock:
-            cursor = self._conn.execute(
-                """
-                UPDATE jobs
-                SET status = 'queued', started_at = NULL, not_before = NULL
-                WHERE status = 'running'
-                """
-            )
+            rows = self._conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE status = 'running'"
+            ).fetchall()
+            resumed = 0
+            failed = 0
+            for row in rows:
+                job = _job_dict(row)
+                if int(job["attempts"]) >= int(max_attempts):
+                    self._conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'failed', finished_at = ?, error = ?
+                        WHERE id = ? AND status = 'running'
+                        """,
+                        (
+                            now,
+                            "It reached the retry limit before the restart.",
+                            job["id"],
+                        ),
+                    )
+                    failed += 1
+                else:
+                    self._conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'queued', started_at = NULL, not_before = NULL
+                        WHERE id = ? AND status = 'running'
+                        """,
+                        (job["id"],),
+                    )
+                    resumed += 1
+            queued = self._conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status = 'queued'"
+            ).fetchone()
             self._conn.commit()
-            return int(cursor.rowcount or 0)
+        return {
+            "queued": int(queued[0]),
+            "in_progress": resumed,
+            "failed": failed,
+        }
 
     def enqueue_job(
         self,
@@ -944,6 +988,69 @@ class State:
     def deletion_usage(self, now: datetime) -> dict:
         with self._lock:
             return self._deletion_usage_locked(now)
+
+    def recent_delete_events(self, now: datetime) -> list[dict]:
+        """Deletes in the last day, which is enough for the hour and day caps."""
+        day = (now - timedelta(days=1)).isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT at, bytes FROM delete_events WHERE at >= ? ORDER BY at, id",
+                (day,),
+            ).fetchall()
+        return [{"at": row[0], "bytes": int(row[1])} for row in rows]
+
+    def restores_ahead(self) -> bool:
+        """A restore, search, or watchlist check is queued or running ahead of deletes."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE status IN ('queued', 'running') AND priority = ?
+                LIMIT 1
+                """,
+                (PRIORITY_SOON,),
+            ).fetchone()
+        return row is not None
+
+    def should_log_block(self, reason: str, now: datetime, interval_seconds: int = BLOCK_LOG_INTERVAL_SECONDS) -> bool:
+        """True when a cap or cooldown should be written again.
+
+        A new reason is logged immediately. The same reason is logged at most
+        once per interval.
+        """
+        if reason not in CAP_BLOCKS:
+            return False
+        with self._lock:
+            previous = self._meta_locked("block_reason")
+            logged = self._meta_locked("block_logged_at")
+            moment = None
+            if logged:
+                try:
+                    moment = datetime.fromisoformat(logged)
+                except ValueError:
+                    moment = None
+                if moment is not None and moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=timezone.utc)
+            changed = previous != reason
+            stale = moment is None or (now - moment).total_seconds() >= interval_seconds
+            if not changed and not stale:
+                return False
+            self._conn.execute(
+                """
+                INSERT INTO queue_meta (key, value) VALUES ('block_reason', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (reason,),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO queue_meta (key, value) VALUES ('block_logged_at', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (now.isoformat(),),
+            )
+            self._conn.commit()
+        return True
 
     def queue_view(self, recent: int = 20) -> dict:
         """Pending and running tasks, plus the latest finished ones. Watchlist checks stay internal."""

@@ -145,6 +145,9 @@
           <h2>Tasks</h2>
           <button type="button" id="tasks-collapse" class="ghost">Hide</button>
         </div>
+        <p id="tasks-block" class="tasks-block"></p>
+        <ul id="tasks-caps" class="tasks-caps"></ul>
+        <p id="tasks-next" class="meta-line"></p>
         <p id="tasks-eta" class="meta-line"></p>
         <p id="tasks-pause-reason" class="meta-line"></p>
         <button type="button" id="tasks-pause" class="ghost">Pause queue</button>
@@ -879,12 +882,26 @@
 
     function jobSentence(job) {
       const label = job.label || "Task";
-      if (job.status === "queued") return `Queued. ${label} will run when earlier tasks finish.`;
+      if (job.status === "queued") {
+        const wait = job.waiting_on && job.waiting_on !== "none"
+          ? ` Waiting on the ${job.waiting_on}.`
+          : " It will run when earlier tasks finish.";
+        return `Queued. ${label}.${wait}`;
+      }
       if (job.status === "running") return `Working. ${label} is running now.`;
       if (job.status === "failed") return `Failed. ${job.error || "The task failed."}`;
       if (job.status === "cancelled") return job.detail || "Cancelled.";
       if (job.detail) return `Done. ${job.detail}`;
       return `Done. ${label} finished.`;
+    }
+
+    function attemptLine(job) {
+      const tries = Number(job.attempts) || 0;
+      const parts = [];
+      if (tries === 1) parts.push("Tried 1 time.");
+      else if (tries > 1) parts.push("Tried " + tries + " times.");
+      if (job.error) parts.push("Last error: " + job.error);
+      return parts.join(" ");
     }
 
     function taskPill(seriesId) {
@@ -929,6 +946,47 @@
       eta.textContent = queue.delete_eta || "";
       reason.textContent = queue.pause_reason || "";
       pause.textContent = queue.deletes_paused ? "Resume deletes" : "Pause queue";
+      const block = document.getElementById("tasks-block");
+      block.textContent = queue.block && queue.block !== "none"
+        ? "Waiting on the " + queue.block + "."
+        : "";
+      const caps = document.getElementById("tasks-caps");
+      caps.innerHTML = (queue.caps || []).map((cap) => `<li>${esc(cap.label)}</li>`).join("");
+      state.nextDeleteAt = queue.next_delete_at || "";
+      paintCountdown();
+    }
+
+    function paintCountdown() {
+      const node = document.getElementById("tasks-next");
+      if (!node) return;
+      if (!state.nextDeleteAt) {
+        node.textContent = "";
+        return;
+      }
+      const target = new Date(state.nextDeleteAt).getTime();
+      if (Number.isNaN(target)) {
+        node.textContent = "";
+        return;
+      }
+      const left = target - Date.now();
+      if (left <= 0) {
+        node.textContent = "The next delete can run now.";
+        return;
+      }
+      node.textContent = "Next delete " + when(state.nextDeleteAt) + " (" + liveLeft(left) + ").";
+    }
+
+    function liveLeft(ms) {
+      const seconds = Math.max(1, Math.ceil(ms / 1000));
+      if (seconds < 60) return seconds === 1 ? "1 second" : seconds + " seconds";
+      const minutes = Math.ceil(seconds / 60);
+      if (minutes < 60) return minutes === 1 ? "1 minute" : minutes + " minutes";
+      const hours = Math.floor(minutes / 60);
+      const rem = minutes % 60;
+      const hourLabel = hours === 1 ? "1 hour" : hours + " hours";
+      if (!rem) return hourLabel;
+      const minuteLabel = rem === 1 ? "1 minute" : rem + " minutes";
+      return hourLabel + " " + minuteLabel;
     }
 
     function queueRow(job) {
@@ -947,11 +1005,12 @@
       const cancel = job.status === "queued"
         ? `<button type="button" class="ghost" data-cancel="${job.id}">Cancel</button>`
         : "";
-      const why = job.status === "failed" ? (job.error || "") : (job.detail || "");
+      const extra = attemptLine(job);
       return `<div class="task-row">
         <strong>${esc(job.title || "Show")}</strong>
         <span class="badge ${pillKind(job.status)}">${pillLabel(job.status)}</span>
-        <p class="meta-line">${esc(jobSentence(job))}${why && job.status !== "queued" && job.status !== "running" ? "" : ""}</p>
+        <p class="meta-line">${esc(jobSentence(job))}</p>
+        ${extra ? `<p class="meta-line">${esc(extra)}</p>` : ""}
         <p class="meta-line">${esc(ago(job.created_at))}</p>
         ${cancel}
       </div>`;
@@ -969,6 +1028,7 @@
     function ensureQueuePoll() {
       if (state.queueTimer) return;
       state.queueTimer = setInterval(pollQueue, 3000);
+      if (!state.countdownTimer) state.countdownTimer = setInterval(paintCountdown, 1000);
     }
 
     async function cancelJob(id) {

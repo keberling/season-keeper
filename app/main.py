@@ -41,6 +41,8 @@ from app.queue_limit import (
     RETRY_BACKOFF_SECONDS,
     TIB,
     delete_eta,
+    queue_block,
+    restore_line,
 )
 from app.radarr import RadarrClient, RadarrError
 from app.plex import PlexClient
@@ -572,6 +574,7 @@ def process_next_job() -> bool:
     settings = holder.settings
     if state is None:
         return False
+    _note_cap_block()
     now = datetime.now(timezone.utc)
     recovered = state.recover_stuck(
         now,
@@ -774,6 +777,7 @@ async def lifespan(app: FastAPI):
     settings = load_settings()
     holder.settings = settings
     holder.state = State(database_path(settings.data_dir))
+    _announce_restored_queue(holder.state)
     holder.worker_stop.clear()
     holder.worker_wake.clear()
     holder.worker = start_worker(
@@ -813,22 +817,64 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trimarr", lifespan=lifespan)
 
 
+def _announce_restored_queue(state: State) -> None:
+    """Log how many tasks were still waiting after a restart. An empty queue stays quiet."""
+    summary = getattr(state, "restored_queue", None) or {}
+    queued = int(summary.get("queued") or 0)
+    in_progress = int(summary.get("in_progress") or 0)
+    failed = int(summary.get("failed") or 0)
+    now = datetime.now(timezone.utc)
+    if queued or in_progress:
+        message = restore_line(queued, in_progress)
+        logger.info("%s", message)
+        state.record_activity(at=now, kind="queued", title="Queue", message=message)
+    if failed:
+        noun = "task was" if failed == 1 else "tasks were"
+        message = (
+            f"{failed} in-progress {noun} not restored because they reached the retry limit."
+            if failed != 1
+            else "1 in-progress task was not restored because it reached the retry limit."
+        )
+        logger.info("%s", message)
+        state.record_activity(at=now, kind="failed", title="Queue", message=message)
+
+
 def _queue_payload() -> dict:
     assert holder.state is not None
     settings = holder.settings
     view = holder.state.queue_view()
     now = datetime.now(timezone.utc)
     backlog = view.get("delete_backlog") or {}
-    eta = ""
-    if settings is not None:
-        eta = delete_eta(
-            int(backlog.get("count") or 0),
-            int(backlog.get("bytes") or 0),
-            holder.state.deletion_usage(now),
-            _delete_limits(settings),
-            now,
-        ) or ""
+    limits = _delete_limits(settings) if settings is not None else {
+        "min_interval_seconds": 30,
+        "hourly_series": 50,
+        "hourly_bytes": 500 * GIB,
+        "daily_bytes": 3 * TIB,
+    }
+    usage = holder.state.deletion_usage(now)
+    eta = delete_eta(
+        int(backlog.get("count") or 0),
+        int(backlog.get("bytes") or 0),
+        usage,
+        limits,
+        now,
+    ) or ""
+    described = queue_block(
+        events=holder.state.recent_delete_events(now),
+        limits=limits,
+        now=now,
+        last_at=usage.get("last_at"),
+        paused=bool(view.get("deletes_paused")),
+        dry_run=bool(settings and settings.dry_run),
+        approval_required=bool(settings and settings.require_delete_approval),
+        jobs=view["jobs"],
+        restores_ahead=holder.state.restores_ahead(),
+    )
     view["delete_eta"] = eta
+    view["block"] = described["block"]
+    view["next_delete_at"] = described["next_delete_at"]
+    view["caps"] = described["caps"]
+    view["block_log"] = described["block_log"]
     held = bool(view.get("deletes_paused")) or bool(settings and settings.dry_run)
     view["deletes_held"] = held
     if settings is not None and settings.dry_run:
@@ -838,6 +884,23 @@ def _queue_payload() -> dict:
     else:
         view["pause_reason"] = ""
     return view
+
+
+def _note_cap_block() -> None:
+    """Write a cap or cooldown line when the reason changes, then at most every few minutes."""
+    state = holder.state
+    if state is None or holder.settings is None:
+        return
+    view = _queue_payload()
+    message = str(view.get("block_log") or "")
+    reason = str(view.get("block") or "")
+    if not message:
+        return
+    now = datetime.now(timezone.utc)
+    if not state.should_log_block(reason, now):
+        return
+    logger.info("%s", message)
+    state.record_activity(at=now, kind="blocked", title="Queue", message=message)
 
 
 @app.get("/health")
@@ -853,6 +916,17 @@ def health() -> dict:
         running = int(view["running_count"])
         paused = bool(view["deletes_paused"]) or bool(settings and settings.dry_run)
     alive = holder.worker is not None and holder.worker.is_alive()
+    block = "none"
+    next_delete_at = None
+    caps: list[dict] = []
+    if state is not None and settings is not None:
+        view = _queue_payload()
+        queued = int(view["queued_count"])
+        running = int(view["running_count"])
+        paused = bool(view["deletes_paused"]) or bool(settings.dry_run)
+        block = view.get("block") or "none"
+        next_delete_at = view.get("next_delete_at")
+        caps = list(view.get("caps") or [])
     return {
         "status": "ok",
         "queue": {
@@ -860,6 +934,9 @@ def health() -> dict:
             "running": running,
             "deletes_paused": paused,
             "worker": alive,
+            "block": block,
+            "next_delete_at": next_delete_at,
+            "caps": caps,
         },
     }
 
@@ -962,6 +1039,7 @@ def activity(kind: str | None = None, q: str | None = None) -> JSONResponse:
         "started",
         "finished",
         "failed",
+        "blocked",
     }
     selected = kind if kind in allowed else None
     return JSONResponse(
