@@ -34,6 +34,7 @@ def build_inventory(
     )
     search = set(decision.search_seasons)
     delete = set(decision.delete_seasons)
+    plans = dict(decision.season_plans)
     rows: list[SeasonRow] = []
     for number in numbers:
         episodes = by_season.get(number, [])
@@ -69,6 +70,7 @@ def build_inventory(
                 monitored=monitored,
                 kept=kept,
                 disposition=disposition,
+                plan=plans.get(number, ""),
             )
         )
     return rows, InventoryTotals.from_rows(rows)

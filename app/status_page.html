@@ -249,7 +249,11 @@
       return full + " · " + relative(date);
     }
 
-    function planWord(value) {
+    function planWord(season) {
+      if (season && typeof season === "object") {
+        if (season.plan) return season.plan;
+        season = season.disposition;
+      }
       return {
         held: "Protected",
         keep: "Keep",
@@ -258,7 +262,7 @@
         unmonitor: "Stop monitoring",
         monitor: "Start monitoring",
         leave: "Leave"
-      }[value] || value || "";
+      }[season] || season || "";
     }
 
     function actionMeaning(row) {
@@ -630,7 +634,7 @@
         <td>${season.episode_count}</td>
         <td>${season.file_count}</td>
         <td>${formatBytes(season.size_on_disk)}</td>
-        <td>${esc(planWord(season.disposition))}</td>
+        <td>${esc(planWord(season))}</td>
       </tr>`).join("");
       return `<table><thead><tr><th>Season</th><th>Episodes</th><th>Files</th><th>On disk</th><th>Plan</th></tr></thead><tbody>${body}</tbody></table>`;
     }
@@ -655,10 +659,11 @@
         const checkRow = document.getElementById("modal-check-row");
         document.getElementById("modal-body").innerHTML = seasonTable(plan.seasons);
         const nothing = plan.action === "skip" || plan.action === "hold";
+        const protection = plan.protection_note ? " " + plan.protection_note : "";
         if (action === "delete") {
           document.getElementById("modal-copy").textContent = nothing
-            ? plan.reason
-            : `Queue season deletion removes the later seasons after you confirm. This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again. If those files are hardlinked to a download that is still seeding, the disk space stays used until that download is gone too.`;
+            ? (plan.protection_note ? plan.reason + " " + plan.protection_note : plan.reason)
+            : `Queue season deletion removes the later seasons after you confirm. This deletes ${plan.files_targeted} episode file${plan.files_targeted === 1 ? "" : "s"} and frees ${formatBytes(plan.bytes_to_free)}. Season 1 is not touched. Sonarr will stop monitoring the deleted seasons so it does not grab them again. If those files are hardlinked to a download that is still seeding, the disk space stays used until that download is gone too.${protection}`;
           document.getElementById("modal-check-label").textContent = "Delete these episode files now. Season 1 stays.";
           go.textContent = `Delete ${plan.files_targeted} files`;
           go.className = "danger";

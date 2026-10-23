@@ -152,6 +152,11 @@
           <span>Keep current season of airing shows</span>
         </label>
         <p class="hint">On by default. For a show Sonarr marks as continuing, season 1 and the highest season that has already aired stay while that season's last episode is inside the watch window, or while the new-season grace still covers it, whichever is later. After that it can be removed like any other later season. Specials are never kept. The current season stays monitored so new episodes download.</p>
+        <label class="check">
+          <input id="override-protection" type="checkbox">
+          <span>A manual pick can delete protected seasons</span>
+        </label>
+        <p class="hint">Off by default. With this off, a show you pick still skips seasons inside the new-season grace, and those seasons are left out of the file count and the size. The schedule always respects that grace period. Turn this on only when a hand-picked delete should remove protected seasons too.</p>
         <h3>Delete speed</h3>
         <p class="hint">One show is deleted at a time. These limits keep a live run from removing a whole library in one pass. Restores and searches are not limited.</p>
         <div class="pair">
@@ -408,6 +413,7 @@
         watch_window_days: Number(document.getElementById("window").value),
         new_season_grace_days: graceDays(),
         keep_current_season: document.getElementById("keep-current").checked,
+        manual_pick_overrides_protection: document.getElementById("override-protection").checked,
         delete_min_interval_seconds: Number(document.getElementById("delete-interval").value),
         delete_hourly_series: Number(document.getElementById("delete-hourly-series").value),
         delete_hourly_gigabytes: Number(document.getElementById("delete-hourly-gb").value),
@@ -496,6 +502,7 @@
         grace.value = data.new_season_grace_days;
       }
       document.getElementById("keep-current").checked = data.keep_current_season !== false;
+      document.getElementById("override-protection").checked = data.manual_pick_overrides_protection === true;
       document.getElementById("delete-interval").value = data.delete_min_interval_seconds ?? 30;
       document.getElementById("delete-hourly-series").value = data.delete_hourly_series ?? 50;
       document.getElementById("delete-hourly-gb").value = data.delete_hourly_gigabytes ?? 500;

@@ -44,8 +44,18 @@ _BLOCK_RANK = {
 }
 
 
-def deletion_allowed(usage: dict, limits: dict, now: datetime) -> tuple[bool, str]:
-    """True when another series delete may start."""
+def deletion_allowed(
+    usage: dict,
+    limits: dict,
+    now: datetime,
+    pending_bytes: int = 0,
+) -> tuple[bool, str]:
+    """True when another series delete may start.
+
+    pending_bytes is the next job. A job that would push a window over its
+    cap waits, unless that window is empty and this one job is larger than
+    the cap by itself.
+    """
     last = _as_datetime(usage.get("last_at"))
     gap = int(limits["min_interval_seconds"])
     if last is not None and gap > 0:
@@ -54,11 +64,45 @@ def deletion_allowed(usage: dict, limits: dict, now: datetime) -> tuple[bool, st
             return False, "Waiting for the pause between deletes."
     if int(usage.get("hour_series") or 0) >= int(limits["hourly_series"]):
         return False, "The hourly show limit has been reached."
-    if int(usage.get("hour_bytes") or 0) >= int(limits["hourly_bytes"]):
+    pending = max(0, int(pending_bytes or 0))
+    hour_bytes = int(usage.get("hour_bytes") or 0)
+    day_bytes = int(usage.get("day_bytes") or 0)
+    hourly_cap = int(limits["hourly_bytes"])
+    daily_cap = int(limits["daily_bytes"])
+    hour_state = _byte_window(hour_bytes, hourly_cap, pending)
+    day_state = _byte_window(day_bytes, daily_cap, pending)
+    if hour_state == "reached":
         return False, "The hourly data limit has been reached."
-    if int(usage.get("day_bytes") or 0) >= int(limits["daily_bytes"]):
+    if hour_state == "would":
+        return False, "The hourly data limit would be passed."
+    if day_state == "reached":
         return False, "The daily data limit has been reached."
+    if day_state == "would":
+        return False, "The daily data limit would be passed."
+    alone = []
+    if hour_state == "alone":
+        alone.append("hourly")
+    if day_state == "alone":
+        alone.append("daily")
+    if alone:
+        window = " and ".join(alone)
+        return True, (
+            f"This delete is larger than the {window} data cap, and nothing else "
+            "was deleted in that window, so it will run alone."
+        )
     return True, ""
+
+
+def _byte_window(used: int, cap: int, pending: int) -> str | None:
+    if cap <= 0:
+        return None
+    if used >= cap:
+        return "reached"
+    if pending and used + pending > cap:
+        if used == 0 and pending > cap:
+            return "alone"
+        return "would"
+    return None
 
 
 def delete_eta(count: int, nbytes: int, usage: dict, limits: dict, now: datetime) -> str | None:

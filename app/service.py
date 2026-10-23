@@ -13,6 +13,7 @@ from app.engine import apply_decision
 from app.intake import apply_watchlist_marks
 from app.models import RunReport, SeriesResult, ShowWatch
 from app.plex import PlexClient, build_watch_index
+from app.arrivals import resolve_arrivals
 from app.policy import decide, plan_manual_prune, plan_manual_restore
 from app.progress import Progress, count_phrase, report as report_progress
 from app.sonarr import SonarrClient, parse_series, partition_ignored, series_tag_payload
@@ -156,9 +157,10 @@ def preview_series(
     series = _load_one(sonarr, settings, series_id, moment)
     policy = settings.policy()
     preview_policy = replace(policy, dry_run=True)
+    arrivals = resolve_arrivals(state, series, sonarr)
     delete = apply_decision(
         series,
-        plan_manual_prune(series, policy),
+        plan_manual_prune(series, policy, moment, arrivals),
         watch=None,
         actions=sonarr,
         state=state,
@@ -194,9 +196,10 @@ def delete_later_seasons(
     moment = now or datetime.now(timezone.utc)
     series = _load_one(sonarr, settings, series_id, moment)
     policy = replace(settings.policy(), dry_run=False, require_delete_approval=False)
+    arrivals = resolve_arrivals(state, series, sonarr)
     result = apply_decision(
         series,
-        plan_manual_prune(series, policy),
+        plan_manual_prune(series, policy, moment, arrivals),
         watch=None,
         actions=sonarr,
         state=state,
@@ -251,8 +254,21 @@ def execute_queued_delete(
     series = parse_series(match, sonarr.list_episodes(int(series_id)), moment)
     watch = _watch_from_report(row)
     policy = replace(settings.policy(), dry_run=False, require_delete_approval=False)
-    decision = decide(series, watch, moment, policy)
+    arrivals = resolve_arrivals(state, series, sonarr)
+    override = source == "user" and bool((job.get("payload") or {}).get("override_protection"))
+    if source == "user":
+        decision = plan_manual_prune(
+            series,
+            replace(policy, manual_pick_overrides_protection=override),
+            moment,
+            arrivals,
+        )
+    else:
+        decision = decide(series, watch, moment, policy, arrivals=arrivals)
     if decision.action != "prune":
+        if decision.protection_result and decision.protected_seasons:
+            _note_protection(state, series, decision.protection_result, moment)
+            raise DeleteSkipped(decision.protection_result)
         raise DeleteSkipped(_kept_reason(decision.action, decision.reason))
     if not decision.delete_file_ids:
         raise DeleteSkipped("Nothing is left to delete.")
@@ -271,10 +287,23 @@ def execute_queued_delete(
     )
     if result.error:
         raise RuntimeError(result.error)
+    if decision.protection_result:
+        _note_protection(state, series, decision.protection_result, moment)
     state.clear_dismissed(series.id)
     _preserve_watch(state, result)
     state.replace_series(result.to_dict())
     return result
+
+
+def _note_protection(state: State, series, message: str, now: datetime) -> None:
+    logger.info("%s", message)
+    state.record_activity(
+        at=now,
+        kind="protected",
+        sonarr_id=series.id,
+        title=series.title,
+        message=message,
+    )
 
 
 def _kept_reason(action: str, reason: str) -> str:

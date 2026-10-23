@@ -36,6 +36,7 @@ STORED_FIELDS = (
     "live_series_ids",
     "new_season_grace_days",
     "keep_current_season",
+    "manual_pick_overrides_protection",
     "plex_watchlist_rss_url",
     "plex_friends_watchlist_rss_url",
     "watchlist_interval_minutes",
@@ -109,6 +110,7 @@ class Settings(BaseModel):
     live_series_ids: list[int] = Field(default_factory=list)
     new_season_grace_days: int | None = None
     keep_current_season: bool = True
+    manual_pick_overrides_protection: bool = False
     plex_watchlist_rss_url: str = ""
     plex_friends_watchlist_rss_url: str = ""
     watchlist_interval_minutes: int = Field(default=5, ge=1, le=1440)
@@ -276,6 +278,7 @@ class Settings(BaseModel):
                 else self.new_season_grace_days
             ),
             keep_current_season=self.keep_current_season,
+            manual_pick_overrides_protection=self.manual_pick_overrides_protection,
         )
 
 
@@ -300,6 +303,7 @@ class SettingsWrite(BaseModel):
     require_delete_approval: bool | None = None
     new_season_grace_days: int | None = None
     keep_current_season: bool | None = None
+    manual_pick_overrides_protection: bool | None = None
     plex_watchlist_rss_url: str | None = None
     plex_friends_watchlist_rss_url: str | None = None
     watchlist_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
@@ -468,6 +472,9 @@ def apply_update(current: Settings, update: SettingsWrite) -> Settings:
         keep_current_season=current.keep_current_season
         if update.keep_current_season is None
         else update.keep_current_season,
+        manual_pick_overrides_protection=current.manual_pick_overrides_protection
+        if update.manual_pick_overrides_protection is None
+        else update.manual_pick_overrides_protection,
         plex_watchlist_rss_url=own_rss,
         plex_friends_watchlist_rss_url=friends_rss,
         watchlist_interval_minutes=current.watchlist_interval_minutes
@@ -555,6 +562,7 @@ def public_settings(settings: Settings) -> dict:
         "new_season_grace_days": settings.new_season_grace_days,
         "new_season_grace_days_effective": settings.policy().new_season_grace.days,
         "keep_current_season": settings.keep_current_season,
+        "manual_pick_overrides_protection": settings.manual_pick_overrides_protection,
         "plex_watchlist_rss_url": settings.plex_watchlist_rss_url,
         "plex_friends_watchlist_rss_url": settings.plex_friends_watchlist_rss_url,
         "watchlist_interval_minutes": settings.watchlist_interval_minutes,

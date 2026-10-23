@@ -247,6 +247,37 @@ class SonarrClient:
     def add_series(self, payload: dict) -> dict:
         return self._request("POST", "/api/v3/series", json=payload) or {}
 
+    def earliest_arrivals(self, series_id: int, episode_seasons: dict[int, int]) -> dict[int, datetime]:
+        """Earliest grab or import for each season, from Sonarr history."""
+        from app.arrivals import arrivals_from_history
+
+        records: list[dict] = []
+        page = 1
+        page_size = 200
+        while page <= 20:
+            data = self._request(
+                "GET",
+                "/api/v3/history",
+                params={
+                    "seriesId": series_id,
+                    "page": page,
+                    "pageSize": page_size,
+                    "sortKey": "date",
+                    "sortDirection": "ascending",
+                },
+            )
+            if isinstance(data, list):
+                batch = data
+                total = len(data)
+            else:
+                batch = (data or {}).get("records") or []
+                total = int((data or {}).get("totalRecords") or len(batch))
+            records.extend(batch)
+            if isinstance(data, list) or page * page_size >= total or not batch:
+                break
+            page += 1
+        return arrivals_from_history(records, episode_seasons)
+
     def list_episodes(self, series_id: int) -> list[dict]:
         return (
             self._request(

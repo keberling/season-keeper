@@ -145,11 +145,27 @@ def test_a_new_special_does_not_hold_the_show_or_get_deleted():
     assert decision.protected_seasons == ()
 
 
-def test_confirmed_delete_can_still_remove_a_season_inside_grace():
+def test_a_manual_pick_skips_a_season_inside_grace_unless_the_override_is_on():
     series = _show(episode(2, 2, 1, file_id=21, file_added_at=NOW - timedelta(days=2)))
-    decision = plan_manual_prune(series, policy())
-    assert decision.action == "prune"
-    assert decision.delete_file_ids == (21,)
+    skipped = plan_manual_prune(series, policy(), NOW)
+    assert skipped.action == "hold"
+    assert skipped.delete_file_ids == ()
+    assert skipped.bytes_to_free == 0
+    assert "Protected until" in dict(skipped.season_plans)[2]
+    assert skipped.protection_result.startswith("Skipped S2:")
+
+    removed = plan_manual_prune(
+        series,
+        policy(manual_pick_overrides_protection=True),
+        NOW,
+    )
+    assert removed.action == "prune"
+    assert removed.delete_file_ids == (21,)
+    assert removed.protection_result == "Removed S2 despite protection (manual pick)"
+
+    automatic = decide(series, watch(), NOW, policy(manual_pick_overrides_protection=True))
+    assert automatic.action == "hold"
+    assert automatic.delete_file_ids == ()
 
 
 def test_grace_defaults_to_the_watch_window_and_can_be_overridden(tmp_path, monkeypatch):
