@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
 
+from app.arrivals import resolve_arrivals
 from app.human import approval_line, cycle_summary, deleted_line, restored_line
 from app.inventory import build_inventory
 from app.models import (
@@ -335,6 +336,8 @@ def apply_decision(
         pending_approval=needs_approval and error is None,
         protected_seasons=list(decision.protected_seasons),
         queued_delete=queued_delete and error is None,
+        protection_note=decision.protection_note,
+        protection_result=decision.protection_result,
     )
 
 
@@ -366,7 +369,8 @@ def execute(
     for index_number, series in enumerate(series_list, start=1):
         report(progress, f"Checking shows, {index_number} of {total}.", done=index_number, total=total)
         watch = watch_for(series, index)
-        decision = decide(series, watch, now, settings)
+        arrivals = resolve_arrivals(state, series, actions)
+        decision = decide(series, watch, now, settings, arrivals=arrivals)
         outside = bool(allowlist) and series.id not in allowlist and not settings.dry_run
         scoped = replace(settings, dry_run=True) if outside else settings
         result = apply_decision(

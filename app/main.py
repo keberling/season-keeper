@@ -349,7 +349,11 @@ def _enqueue_series(kind: str, series_id: int, *, ignore: bool | None = None) ->
     if kind == "delete-later":
         label = "Approve deletion" if pending else "Queue season deletion"
         key = f"delete-later:{series_id}"
-        payload = {"source": "user"}
+        settings = holder.settings
+        payload = {
+            "source": "user",
+            "override_protection": bool(settings and settings.manual_pick_overrides_protection),
+        }
         priority = PRIORITY_DELETE
         if holder.state is not None:
             report = holder.state.load_report() or {}
@@ -616,8 +620,8 @@ def process_next_job() -> bool:
                     nbytes=outcome.bytes_to_free,
                 )
             detail = None
-            if isinstance(outcome, SeriesResult) and outcome.queued_delete:
-                detail = None
+            if isinstance(outcome, SeriesResult) and outcome.protection_result:
+                detail = outcome.protection_result
             _finish_job(job, detail=detail)
         return True
     finally:
@@ -1040,6 +1044,7 @@ def activity(kind: str | None = None, q: str | None = None) -> JSONResponse:
         "finished",
         "failed",
         "blocked",
+        "protected",
     }
     selected = kind if kind in allowed else None
     return JSONResponse(

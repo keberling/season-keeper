@@ -109,6 +109,7 @@ class PolicySettings:
     live_series_ids: frozenset[int] = field(default_factory=frozenset)
     new_season_grace: timedelta = timedelta(days=90)
     keep_current_season: bool = True
+    manual_pick_overrides_protection: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,9 @@ class Decision:
     protected_seasons: tuple[int, ...] = ()
     kept_seasons: tuple[int, ...] = ()
     ensure_monitored_seasons: tuple[int, ...] = ()
+    season_plans: tuple[tuple[int, str], ...] = ()
+    protection_note: str = ""
+    protection_result: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +182,7 @@ class SeasonRow:
     monitored: bool
     kept: bool
     disposition: str
+    plan: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -189,6 +194,7 @@ class SeasonRow:
             "monitored": self.monitored,
             "kept": self.kept,
             "disposition": self.disposition,
+            "plan": self.plan,
         }
 
 
@@ -230,6 +236,8 @@ class SeriesResult:
     in_live_scope: bool = False
     protected_seasons: list[int] = field(default_factory=list)
     queued_delete: bool = False
+    protection_note: str = ""
+    protection_result: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -269,6 +277,8 @@ class SeriesResult:
             "in_live_scope": self.in_live_scope,
             "protected_seasons": list(self.protected_seasons),
             "queued_delete": self.queued_delete,
+            "protection_note": self.protection_note,
+            "protection_result": self.protection_result,
         }
 
 

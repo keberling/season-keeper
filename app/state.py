@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,8 @@ from app.queue_limit import (
     RESTORE_CANCEL,
     deletion_allowed,
 )
+
+logger = logging.getLogger("trimarr")
 
 
 class State:
@@ -110,6 +113,12 @@ class State:
             CREATE TABLE IF NOT EXISTS queue_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS season_arrivals (
+                sonarr_id INTEGER NOT NULL,
+                season_number INTEGER NOT NULL,
+                first_seen TEXT NOT NULL,
+                PRIMARY KEY (sonarr_id, season_number)
             );
             CREATE TABLE IF NOT EXISTS cycles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -734,7 +743,7 @@ class State:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT id, kind FROM jobs
+                SELECT id, kind, nbytes FROM jobs
                 WHERE status = 'queued' AND (not_before IS NULL OR not_before <= ?)
                 ORDER BY priority ASC, id ASC
                 """,
@@ -742,6 +751,7 @@ class State:
             ).fetchall()
             usage = self._deletion_usage_locked(now) if limits else None
             chosen: int | None = None
+            alone = ""
             for row in rows:
                 kind = str(row[1])
                 if kind == "run" and block_runs:
@@ -750,11 +760,16 @@ class State:
                     if block_deletes:
                         continue
                     if limits is not None and usage is not None:
-                        allowed, _reason = deletion_allowed(usage, limits, now)
+                        allowed, reason = deletion_allowed(
+                            usage, limits, now, pending_bytes=int(row[2] or 0)
+                        )
                         if not allowed:
                             continue
+                        alone = reason
                 chosen = int(row[0])
                 break
+            if chosen is not None and alone:
+                logger.info("%s", alone)
             if chosen is None:
                 return None
             cursor = self._conn.execute(
@@ -973,6 +988,63 @@ class State:
                 """,
                 ("1" if paused else "0",),
             )
+            self._conn.commit()
+
+    def season_arrivals(self, series_id: int) -> dict[int, datetime]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT season_number, first_seen FROM season_arrivals
+                WHERE sonarr_id = ?
+                """,
+                (int(series_id),),
+            ).fetchall()
+        found: dict[int, datetime] = {}
+        for season, raw in rows:
+            try:
+                parsed = datetime.fromisoformat(str(raw))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            found[int(season)] = parsed.astimezone(timezone.utc)
+        return found
+
+    def remember_arrivals(self, series_id: int, arrivals: dict[int, datetime]) -> None:
+        """Save a first-seen date. A later re-download does not move it forward."""
+        if not arrivals:
+            return
+        with self._lock:
+            for season, when in arrivals.items():
+                if int(season) == 0 or when is None:
+                    continue
+                moment = when.astimezone(timezone.utc)
+                row = self._conn.execute(
+                    """
+                    SELECT first_seen FROM season_arrivals
+                    WHERE sonarr_id = ? AND season_number = ?
+                    """,
+                    (int(series_id), int(season)),
+                ).fetchone()
+                if row is not None:
+                    try:
+                        current = datetime.fromisoformat(str(row[0]))
+                    except ValueError:
+                        current = None
+                    if current is not None:
+                        if current.tzinfo is None:
+                            current = current.replace(tzinfo=timezone.utc)
+                        if moment >= current.astimezone(timezone.utc):
+                            continue
+                self._conn.execute(
+                    """
+                    INSERT INTO season_arrivals (sonarr_id, season_number, first_seen)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(sonarr_id, season_number) DO UPDATE SET
+                        first_seen = excluded.first_seen
+                    """,
+                    (int(series_id), int(season), moment.isoformat()),
+                )
             self._conn.commit()
 
     def record_deletion(self, *, at: datetime, sonarr_id: int, nbytes: int) -> None:

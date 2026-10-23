@@ -44,8 +44,14 @@ def is_recent(when: datetime | None, now: datetime, window: timedelta) -> bool:
     return (now - when) <= window
 
 
-def season_arrival(series: SeriesSnapshot, season_number: int) -> datetime | None:
-    """Earliest episode-file dateAdded for a season, or the earliest air date."""
+def season_arrival(
+    series: SeriesSnapshot,
+    season_number: int,
+    arrivals: dict[int, datetime] | None = None,
+) -> datetime | None:
+    """When a season first arrived. A saved first-seen date beats a later re-download."""
+    if arrivals and arrivals.get(season_number) is not None:
+        return arrivals[season_number]
     episodes = [episode for episode in series.episodes if episode.season_number == season_number]
     added = [episode.file_added_at for episode in episodes if episode.file_added_at is not None]
     if added:
@@ -61,6 +67,7 @@ def protected_arrivals(
     now: datetime,
     grace: timedelta,
     keep: frozenset[int],
+    arrivals: dict[int, datetime] | None = None,
 ) -> dict[int, datetime]:
     """Seasons that are too new to unmonitor or delete. Specials are never included."""
     numbers = {episode.season_number for episode in series.episodes} | {
@@ -70,7 +77,7 @@ def protected_arrivals(
     for number in numbers:
         if number == 0 or number in keep:
             continue
-        arrived = season_arrival(series, number)
+        arrived = season_arrival(series, number, arrivals)
         if arrived is not None and is_recent(arrived, now, grace):
             found[number] = arrived
     return found
@@ -83,6 +90,48 @@ def _grace_reason(protected: dict[int, datetime], grace: timedelta) -> str:
         until = (arrived + grace).astimezone(timezone.utc).date().isoformat()
         sentences.append(f"New season {number} added {added}, protected until {until}.")
     return " ".join(sentences)
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def short_date(when: datetime) -> str:
+    moment = when.astimezone(timezone.utc)
+    return f"{_MONTHS[moment.month - 1]} {moment.day}"
+
+
+def protection_plan_label(arrived: datetime, grace: timedelta) -> str:
+    return f"Protected until {short_date(arrived + grace)} (added {short_date(arrived)})"
+
+
+def protection_skip_line(protected: dict[int, datetime], grace: timedelta) -> str:
+    grouped: dict[str, list[int]] = {}
+    order: list[str] = []
+    for number, arrived in sorted(protected.items()):
+        until = short_date(arrived + grace)
+        if until not in grouped:
+            order.append(until)
+            grouped[until] = []
+        grouped[until].append(number)
+    return ". ".join(
+        f"Skipped {', '.join(f'S{number}' for number in grouped[until])}: protected until {until}"
+        for until in order
+    )
+
+
+def protection_removed_line(numbers: list[int] | tuple[int, ...]) -> str:
+    codes = ", ".join(f"S{number}" for number in sorted(numbers))
+    return f"Removed {codes} despite protection (manual pick)"
+
+
+def protection_note(protected: dict[int, datetime], grace: timedelta, *, removed: bool) -> str:
+    days = grace.days
+    unit = "day" if days == 1 else "days"
+    if removed:
+        outcome = protection_removed_line(tuple(protected))
+    else:
+        outcome = protection_skip_line(protected, grace)
+    return f"New seasons are protected for {days} {unit}. {outcome}"
 
 
 def _episode_aired(episode, now: datetime) -> bool:
@@ -132,6 +181,7 @@ def _airing_keep(
     now: datetime,
     keep: frozenset[int],
     protected: dict[int, datetime],
+    arrivals: dict[int, datetime] | None = None,
 ) -> _AiringKeep | None:
     """Season 1 plus the fresh current season of a show that is still continuing."""
     if not settings.keep_current_season:
@@ -150,7 +200,7 @@ def _airing_keep(
     if by_air and last is not None:
         detail = f"last episode aired {aired_on(last)}"
     else:
-        arrived = protected.get(current) or season_arrival(series, current)
+        arrived = protected.get(current) or season_arrival(series, current, arrivals)
         if arrived is None:
             detail = "current season"
         else:
@@ -242,6 +292,7 @@ def decide(
     watch: ShowWatch,
     now: datetime,
     settings: PolicySettings,
+    arrivals: dict[int, datetime] | None = None,
 ) -> Decision:
     window = settings.watch_window
     keep = managed_keep(settings.keep_seasons)
@@ -274,7 +325,14 @@ def decide(
             "skip",
             "Plex watch history is incomplete, so later seasons were left in place.",
         )
-    return _prune(series, settings, days, now=now, grace=settings.new_season_grace)
+    return _prune(
+        series,
+        settings,
+        days,
+        now=now,
+        grace=settings.new_season_grace,
+        arrivals=arrivals,
+    )
 
 
 def _quiet(action: str, reason: str) -> Decision:
@@ -432,32 +490,59 @@ def _restore(
     )
 
 
+def _protection_fields(
+    protected: dict[int, datetime],
+    grace: timedelta | None,
+    *,
+    removed: bool,
+) -> tuple[tuple[tuple[int, str], ...], str, str]:
+    if not protected or grace is None:
+        return (), "", ""
+    plans = tuple(
+        (number, protection_plan_label(arrived, grace))
+        for number, arrived in sorted(protected.items())
+    )
+    result = protection_removed_line(tuple(protected)) if removed else protection_skip_line(protected, grace)
+    return plans, protection_note(protected, grace, removed=removed), result
+
+
 def _prune(
     series: SeriesSnapshot,
     settings: PolicySettings,
     days: int,
     now: datetime | None = None,
     grace: timedelta | None = None,
+    arrivals: dict[int, datetime] | None = None,
+    include_protected: bool = False,
+    apply_airing_keep: bool = True,
 ) -> Decision:
     keep = managed_keep(settings.keep_seasons)
     protected = (
-        protected_arrivals(series, now, grace, keep)
+        protected_arrivals(series, now, grace, keep, arrivals)
         if now is not None and grace is not None
         else {}
     )
-    airing = _airing_keep(series, settings, now, keep, protected) if now is not None else None
+    airing = (
+        _airing_keep(series, settings, now, keep, protected, arrivals)
+        if apply_airing_keep and now is not None
+        else None
+    )
     if airing is not None:
         keep = keep | frozenset({airing.season})
         protected.pop(airing.season, None)
+    shielded = set() if include_protected else set(protected)
+    plans, note, result_line = _protection_fields(
+        protected, grace, removed=include_protected
+    )
     protected_files = {
         episode.episode_file_id
         for episode in series.episodes
-        if episode.season_number in protected and episode.episode_file_id
+        if episode.season_number in shielded and episode.episode_file_id
     }
     season_map = {
         season.season_number: season.season_number in keep
         for season in series.seasons
-        if season.season_number != 0 and season.season_number not in protected
+        if season.season_number != 0 and season.season_number not in shielded
     }
     if has_specials(series):
         season_map[0] = False
@@ -466,7 +551,7 @@ def _prune(
         for episode in series.episodes
         if episode.season_number != 0
         and episode.season_number not in keep
-        and episode.season_number not in protected
+        and episode.season_number not in shielded
         and episode.monitored
     ]
     delete_ids: list[int] = []
@@ -477,7 +562,7 @@ def _prune(
         if (
             episode.season_number == 0
             or episode.season_number in keep
-            or episode.season_number in protected
+            or episode.season_number in shielded
             or not episode.episode_file_id
         ):
             continue
@@ -499,7 +584,7 @@ def _prune(
         for season in series.seasons
         if season.season_number != 0
         and season.season_number not in keep
-        and season.season_number not in protected
+        and season.season_number not in shielded
         and season.monitored
     ]
     monitor_new = _desired_monitor_new(
@@ -520,7 +605,7 @@ def _prune(
         and not delete_ids
         and not later_still_monitored
         and not other_kept_off
-        and (airing is not None or (protected and grace is not None))
+        and (airing is not None or (protected and grace is not None and not include_protected))
     ):
         parts: list[str] = []
         if protected and grace is not None:
@@ -542,6 +627,9 @@ def _prune(
             protected_seasons=tuple(sorted(protected)),
             kept_seasons=(airing.season,) if airing is not None else (),
             ensure_monitored_seasons=(airing.season,) if airing is not None and airing.monitor_season else (),
+            season_plans=plans,
+            protection_note=note,
+            protection_result=result_line,
         )
     if not needs_put and not unmonitor_ids and not delete_ids:
         return _quiet(
@@ -564,7 +652,7 @@ def _prune(
                 for episode in series.episodes
                 if episode.season_number != 0
                 and episode.season_number not in keep
-                and episode.season_number not in protected
+                and episode.season_number not in shielded
                 and episode.monitored
             }
         )
@@ -597,13 +685,34 @@ def _prune(
             protected_seasons=tuple(sorted(protected)),
             kept_seasons=(airing.season,) if airing is not None else (),
             ensure_monitored_seasons=(airing.season,) if airing is not None and airing.monitor_season else (),
+            season_plans=plans,
+            protection_note=note,
+            protection_result=result_line,
         ),
     )
 
 
-def plan_manual_prune(series: SeriesSnapshot, settings: PolicySettings) -> Decision:
-    """Delete later seasons of one series because the user asked for that show."""
-    decision = _prune(series, settings, settings.watch_window.days)
+def plan_manual_prune(
+    series: SeriesSnapshot,
+    settings: PolicySettings,
+    now: datetime | None = None,
+    arrivals: dict[int, datetime] | None = None,
+) -> Decision:
+    """Delete later seasons of one series because the user asked for that show.
+
+    Grace uses the same clock as the automatic scan. A manual pick skips
+    protected seasons unless manual_pick_overrides_protection is on.
+    """
+    decision = _prune(
+        series,
+        settings,
+        settings.watch_window.days,
+        now=now,
+        grace=None if now is None else settings.new_season_grace,
+        arrivals=arrivals,
+        include_protected=bool(settings.manual_pick_overrides_protection) and now is not None,
+        apply_airing_keep=False,
+    )
     marker = f"No Plex plays in {settings.watch_window.days} days."
     if decision.reason.startswith(marker):
         decision = replace(
