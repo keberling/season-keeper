@@ -254,6 +254,7 @@ class SonarrClient:
         records: list[dict] = []
         page = 1
         page_size = 200
+        wanted = {int(season) for season in episode_seasons.values() if int(season) != 0}
         while page <= 20:
             data = self._request(
                 "GET",
@@ -273,8 +274,11 @@ class SonarrClient:
                 batch = (data or {}).get("records") or []
                 total = int((data or {}).get("totalRecords") or len(batch))
             records.extend(batch)
+            found = arrivals_from_history(records, episode_seasons)
             if isinstance(data, list) or page * page_size >= total or not batch:
-                break
+                return found
+            if wanted and wanted <= set(found):
+                return found
             page += 1
         return arrivals_from_history(records, episode_seasons)
 
