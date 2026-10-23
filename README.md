@@ -24,7 +24,7 @@ Matching uses the TVDB id Sonarr stores and the TVDB guid on the Plex show. A mo
 
 ## Install on Unraid
 
-The image is `ghcr.io/keberling/trimarr:latest`. The same build is also published as `ghcr.io/keberling/season-keeper:latest` during the transition. Sonarr and Plex are entered on the Admin page after the container is running. The template asks for the port, the appdata folder, and the container user. Keep the existing appdata folder: `settings.json` and `season-keeper.sqlite` in `/data` load unchanged.
+The image is `ghcr.io/keberling/trimarr:latest`. Sonarr and Plex are entered on the Admin page after the container is running. The template asks for the port, the appdata folder, and the container user. Keep the existing appdata folder: `settings.json` and `season-keeper.sqlite` in `/data` load unchanged.
 
 Plex on Unraid is often on the host network, and Sonarr is often on a bridge port. From this container, `localhost` is the container itself. Use the Unraid server IP for both URLs.
 

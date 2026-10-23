@@ -28,7 +28,6 @@ jobs:
         with:
           images: |
             ghcr.io/keberling/trimarr
-            ghcr.io/keberling/season-keeper
           tags: |
             type=raw,value=latest
 
@@ -41,14 +40,12 @@ jobs:
             ${{ steps.meta.outputs.labels }}
             org.opencontainers.image.title=Trimarr
 
-      - name: Make the packages public
+      - name: Make the package public
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for name in trimarr season-keeper; do
-            gh api --method PATCH \
-              -H "Accept: application/vnd.github+json" \
-              "/user/packages/container/${name}/visibility" \
-              -f visibility=public
-          done
+          gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/trimarr/visibility" \
+            -f visibility=public

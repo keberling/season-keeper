@@ -22,13 +22,20 @@ def test_pages_and_the_image_use_the_trimarr_name():
     assert "<title>Trimarr Admin</title>" in (ROOT / "app" / "admin_page.html").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
     assert "ghcr.io/keberling/trimarr" in workflow
-    assert "ghcr.io/keberling/season-keeper" in workflow
+    assert "type=raw,value=latest" in workflow
+    assert "ghcr.io/keberling/season-keeper" not in workflow
+    assert "season-keeper" not in workflow
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert 'org.opencontainers.image.title="Trimarr"' in dockerfile
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert readme.startswith("# Trimarr")
     assert "ghcr.io/keberling/trimarr:latest" in readme
-    assert "ghcr.io/keberling/season-keeper:latest" in readme
+    assert "ghcr.io/keberling/season-keeper" not in readme
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    template = (ROOT / "unraid" / "my-season-keeper.xml").read_text(encoding="utf-8")
+    assert "ghcr.io/keberling/season-keeper" not in compose
+    assert "ghcr.io/keberling/season-keeper" not in template
+    assert "ghcr.io/keberling/trimarr:latest" in template
 
 
 def test_the_sonarr_tag_default_stays_season_keeper():
