@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ValidationError, field_validator
 
+from app.arrivals import seed_arrivals_from_history, serve_arrival_seeds
 from app.config import (
     RuntimeSettings,
     Settings,
@@ -56,7 +57,7 @@ from app.service import (
     run_cycle,
     set_keep_all,
 )
-from app.sonarr import SonarrClient, SonarrError
+from app.sonarr import SonarrClient, SonarrError, parse_series
 from app.state import State
 
 logger = logging.getLogger("trimarr")
@@ -97,6 +98,7 @@ class Holder:
         self.worker_stop = threading.Event()
         self.worker_wake = threading.Event()
         self.worker: threading.Thread | None = None
+        self.seeder: threading.Thread | None = None
 
 
 holder = Holder()
@@ -774,6 +776,54 @@ def probe_connections(settings: Settings) -> dict:
     return {"sonarr": sonarr_result, "plex": plex_result, "sonarr_options": sonarr_options}
 
 
+def seed_next_arrival() -> bool:
+    """Read Sonarr history for one show. A page request never calls this.
+
+    Skipped while a scan or another Sonarr task is already running, so the
+    history walk does not pile onto the request that opened the show.
+    """
+    state = holder.state
+    settings = holder.settings
+    if state is None or settings is None or not settings.configured:
+        return False
+    if holder.running or holder.mutation.locked():
+        return False
+    now = datetime.now(timezone.utc)
+    series_id = state.next_arrival_seed(now)
+    if series_id is None:
+        return False
+    sonarr = None
+    try:
+        sonarr = SonarrClient(
+            settings.sonarr_base,
+            settings.sonarr_api_key,
+            settings.http_timeout_seconds,
+        )
+        match = None
+        for row in sonarr.list_series() or []:
+            if int(row.get("id") or 0) == int(series_id):
+                match = row
+                break
+        if match is None:
+            state.mark_arrival_seeded(series_id, now)
+            logger.info("Sonarr no longer has show %s, so its arrival history was skipped.", series_id)
+            return True
+        series = parse_series(match, sonarr.list_episodes(int(series_id)), now)
+        seed_arrivals_from_history(state, series, sonarr, now)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Could not read Sonarr history for show %s. It will be tried again later. %s",
+            series_id,
+            exc,
+        )
+        state.defer_arrival_seed(series_id, now + timedelta(minutes=15))
+        return False
+    finally:
+        if sonarr is not None:
+            sonarr.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     runtime = RuntimeSettings()
@@ -790,6 +840,13 @@ async def lifespan(app: FastAPI):
         process_next_job,
         _recover_stuck_jobs,
     )
+    holder.seeder = threading.Thread(
+        target=serve_arrival_seeds,
+        args=(holder.worker_stop, seed_next_arrival),
+        name="trimarr-arrivals",
+        daemon=True,
+    )
+    holder.seeder.start()
     if settings.configured:
         mode = "preview only" if settings.dry_run else "live"
         logger.info(
@@ -814,6 +871,9 @@ async def lifespan(app: FastAPI):
         if holder.worker is not None:
             holder.worker.join(timeout=2)
             holder.worker = None
+        if holder.seeder is not None:
+            holder.seeder.join(timeout=2)
+            holder.seeder = None
         scheduler.shutdown(wait=False)
         holder.scheduler = None
 

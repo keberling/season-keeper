@@ -156,6 +156,9 @@ def preview_series(
     moment = now or datetime.now(timezone.utc)
     series = _load_one(sonarr, settings, series_id, moment)
     policy = settings.policy()
+    # dry_run here only means "do not touch Sonarr while building the plan".
+    # The response reports the real mode separately, as dry_run, and marks the
+    # plan itself with preview so the two are not the same flag.
     preview_policy = replace(policy, dry_run=True)
     arrivals = resolve_arrivals(state, series, sonarr)
     delete = apply_decision(
@@ -183,7 +186,18 @@ def preview_series(
         honor_cooldown=False,
         announce_preview=False,
     )
-    return {"delete": delete.to_dict(), "download": download.to_dict()}
+    return {
+        "delete": _preview_body(delete, dry_run=settings.dry_run),
+        "download": _preview_body(download, dry_run=settings.dry_run),
+    }
+
+
+def _preview_body(result: SeriesResult, *, dry_run: bool) -> dict:
+    """The plan is always a preview. dry_run is the app mode, not that fact."""
+    body = result.to_dict()
+    body["preview"] = True
+    body["dry_run"] = dry_run
+    return body
 
 
 def delete_later_seasons(

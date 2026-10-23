@@ -120,6 +120,12 @@ class State:
                 first_seen TEXT NOT NULL,
                 PRIMARY KEY (sonarr_id, season_number)
             );
+            CREATE TABLE IF NOT EXISTS arrival_seeds (
+                sonarr_id INTEGER PRIMARY KEY,
+                seeded_at TEXT,
+                requested_at TEXT,
+                not_before TEXT
+            );
             CREATE TABLE IF NOT EXISTS cycles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 finished_at TEXT NOT NULL,
@@ -1045,6 +1051,75 @@ class State:
                     """,
                     (int(series_id), int(season), moment.isoformat()),
                 )
+            self._conn.commit()
+
+    def arrival_seeded(self, series_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT seeded_at FROM arrival_seeds WHERE sonarr_id = ?",
+                (int(series_id),),
+            ).fetchone()
+        return bool(row and row[0])
+
+    def note_arrival_seed(self, series_id: int, now: datetime) -> None:
+        """Ask the background seeder to read this show once. A finished seed stays finished."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO arrival_seeds (sonarr_id, requested_at)
+                VALUES (?, ?)
+                ON CONFLICT(sonarr_id) DO UPDATE SET
+                    requested_at = excluded.requested_at
+                WHERE arrival_seeds.seeded_at IS NULL
+                """,
+                (int(series_id), now.astimezone(timezone.utc).isoformat()),
+            )
+            self._conn.commit()
+
+    def next_arrival_seed(self, now: datetime) -> int | None:
+        moment = now.astimezone(timezone.utc).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT sonarr_id FROM arrival_seeds
+                WHERE seeded_at IS NULL AND (not_before IS NULL OR not_before <= ?)
+                ORDER BY requested_at DESC, sonarr_id ASC
+                LIMIT 1
+                """,
+                (moment,),
+            ).fetchone()
+        if row is None:
+            return None
+        return int(row[0])
+
+    def mark_arrival_seeded(self, series_id: int, now: datetime) -> None:
+        moment = now.astimezone(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO arrival_seeds (sonarr_id, seeded_at, requested_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sonarr_id) DO UPDATE SET
+                    seeded_at = excluded.seeded_at,
+                    not_before = NULL
+                """,
+                (int(series_id), moment, moment),
+            )
+            self._conn.commit()
+
+    def defer_arrival_seed(self, series_id: int, not_before: datetime) -> None:
+        moment = not_before.astimezone(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO arrival_seeds (sonarr_id, requested_at, not_before)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sonarr_id) DO UPDATE SET
+                    not_before = excluded.not_before
+                WHERE arrival_seeds.seeded_at IS NULL
+                """,
+                (int(series_id), moment, moment),
+            )
             self._conn.commit()
 
     def record_deletion(self, *, at: datetime, sonarr_id: int, nbytes: int) -> None:

@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.arrivals import arrivals_from_history, resolve_arrivals
+from app.arrivals import arrivals_from_history, resolve_arrivals, seed_arrivals_from_history
 from app.config import Settings, SettingsWrite, apply_update, load_settings, public_settings
 from app.models import SeriesResult
 from app.policy import decide, plan_manual_prune
@@ -177,6 +177,111 @@ def test_an_automatic_run_still_skips_protected_seasons_when_override_is_on():
     assert 61 not in decision.delete_file_ids
     assert decision.protection_result == SKIP
     assert decision.bytes_to_free == 60
+
+
+def test_opening_a_show_does_not_scan_history_and_reports_the_live_mode(tmp_path, monkeypatch):
+    from app.main import holder, seed_next_arrival
+
+    series = _dexter()
+    state = _state(tmp_path)
+    sonarr = _dated_library(series, history={2: OLD, 6: OLD})
+    calls = {"n": 0}
+    real = sonarr.earliest_arrivals
+
+    def wrapped(series_id, episode_seasons):
+        calls["n"] += 1
+        return real(series_id, episode_seasons)
+
+    sonarr.earliest_arrivals = wrapped
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __getattr__(self, name):
+            return getattr(sonarr, name)
+
+        def close(self):
+            pass
+
+    holder.state = state
+    holder.settings = _settings(dry_run=False)
+    holder.running = False
+    try:
+        live = preview_series(holder.settings, state, sonarr, series.id, NOW)
+        assert calls["n"] == 0
+        assert live["delete"]["preview"] is True
+        assert live["delete"]["dry_run"] is False
+        assert live["download"]["preview"] is True
+        assert live["download"]["dry_run"] is False
+        assert state.season_arrivals(series.id)[2] == ADDED
+        again = preview_series(holder.settings, state, sonarr, series.id, NOW)
+        assert calls["n"] == 0
+        assert again["delete"]["dry_run"] is False
+
+        paused = preview_series(_settings(dry_run=True), state, sonarr, series.id, NOW)
+        assert paused["delete"]["preview"] is True
+        assert paused["delete"]["dry_run"] is True
+        assert calls["n"] == 0
+
+        monkeypatch.setattr("app.main.SonarrClient", Client)
+        assert seed_next_arrival() is True
+        assert calls["n"] == 1
+        assert state.arrival_seeded(series.id) is True
+        assert state.season_arrivals(series.id)[2] == OLD
+        assert seed_next_arrival() is False
+        assert calls["n"] == 1
+    finally:
+        if holder.mutation.locked():
+            holder.mutation.release()
+        holder.running = False
+        holder.state.close()
+        holder.state = None
+        holder.settings = None
+
+
+def test_a_failed_history_seed_is_not_retried_immediately(tmp_path, monkeypatch):
+    from app.main import holder, seed_next_arrival
+
+    series = _dexter()
+    state = _state(tmp_path)
+    sonarr = _dated_library(series)
+    calls = {"n": 0}
+
+    def boom(_series_id, _episode_seasons):
+        calls["n"] += 1
+        raise RuntimeError("history timed out")
+
+    sonarr.earliest_arrivals = boom
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __getattr__(self, name):
+            return getattr(sonarr, name)
+
+        def close(self):
+            pass
+
+    holder.state = state
+    holder.settings = _settings(dry_run=False)
+    holder.running = False
+    try:
+        preview_series(holder.settings, state, sonarr, series.id, NOW)
+        assert calls["n"] == 0
+        monkeypatch.setattr("app.main.SonarrClient", Client)
+        assert seed_next_arrival() is False
+        assert calls["n"] == 1
+        assert state.arrival_seeded(series.id) is False
+        assert seed_next_arrival() is False
+        assert calls["n"] == 1
+        assert state.next_arrival_seed(NOW) is None
+    finally:
+        holder.running = False
+        holder.state.close()
+        holder.state = None
+        holder.settings = None
 
 
 def test_the_dialog_uses_the_same_file_count_and_size_as_the_plan(tmp_path):
@@ -363,10 +468,26 @@ def test_history_seeds_an_earlier_arrival_than_the_current_file_date(tmp_path):
     series = _dexter()
     state = State(tmp_path / "history.sqlite")
     sonarr = _dated_library(series, history={2: OLD, 6: OLD})
+    calls = {"n": 0}
+    real = sonarr.earliest_arrivals
+
+    def wrapped(series_id, episode_seasons):
+        calls["n"] += 1
+        return real(series_id, episode_seasons)
+
+    sonarr.earliest_arrivals = wrapped
     arrivals = resolve_arrivals(state, series, sonarr)
-    assert arrivals[2] == OLD
-    assert arrivals[6] == OLD
-    decision = plan_manual_prune(series, policy(), NOW, arrivals)
+    assert calls["n"] == 0
+    assert arrivals[2] == ADDED
+    assert arrivals[6] == ADDED
+    assert seed_arrivals_from_history(state, series, sonarr, NOW) is True
+    assert calls["n"] == 1
+    stored = state.season_arrivals(series.id)
+    assert stored[2] == OLD
+    assert stored[6] == OLD
+    assert seed_arrivals_from_history(state, series, sonarr, NOW) is False
+    assert calls["n"] == 1
+    decision = plan_manual_prune(series, policy(), NOW, stored)
     assert decision.delete_file_ids == (21, 31, 41, 51, 61)
     assert decision.protected_seasons == ()
 

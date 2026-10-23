@@ -1,9 +1,15 @@
-"""Remember when each season first arrived so a re-download does not restart grace."""
+"""Remember when each season first arrived so a re-download does not restart grace.
+
+A request uses the dates already stored, plus the current file date when a
+season has never been seen. Sonarr history is read once per series by a
+background seeder, never while a page is waiting.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 
 from app.models import SeriesSnapshot
 from app.state import State
@@ -58,35 +64,74 @@ def arrivals_from_history(
     return found
 
 
-def resolve_arrivals(state: State, series: SeriesSnapshot, sonarr=None) -> dict[int, datetime]:
-    """First-seen dates for this show. A later file date never replaces an earlier one."""
-    stored = state.season_arrivals(series.id)
+def _season_numbers(series: SeriesSnapshot) -> set[int]:
     seasons = {episode.season_number for episode in series.episodes}
     seasons.update(season.season_number for season in series.seasons)
     seasons.discard(0)
-    history: dict[int, datetime] = {}
-    if sonarr is not None and any(number not in stored for number in seasons):
-        fetch = getattr(sonarr, "earliest_arrivals", None)
-        if fetch is not None:
-            try:
-                history = fetch(
-                    series.id,
-                    {episode.id: episode.season_number for episode in series.episodes},
-                ) or {}
-            except Exception:
-                logger.debug("Could not read Sonarr history for %s", series.label, exc_info=True)
+    return seasons
+
+
+def resolve_arrivals(state: State, series: SeriesSnapshot, sonarr=None) -> dict[int, datetime]:
+    """Stored first-seen dates. A missing season uses the current file date.
+
+    ``sonarr`` is accepted so callers can stay the same. History is not read
+    here; that scan is what made a single show preview take minutes.
+    """
+    del sonarr
+    stored = state.season_arrivals(series.id)
     resolved: dict[int, datetime] = {}
-    for number in seasons:
+    for number in _season_numbers(series):
         if number in stored:
             resolved[number] = stored[number]
             continue
-        candidates = []
-        if number in history:
-            candidates.append(history[number])
         added = earliest_file_added(series, number)
         if added is not None:
-            candidates.append(added)
-        if candidates:
-            resolved[number] = min(candidates)
+            resolved[number] = added
     state.remember_arrivals(series.id, resolved)
+    if not state.arrival_seeded(series.id):
+        state.note_arrival_seed(series.id, datetime.now(timezone.utc))
     return resolved
+
+
+def seed_arrivals_from_history(state: State, series: SeriesSnapshot, sonarr, now: datetime) -> bool:
+    """Read Sonarr history once and keep any date earlier than the file date.
+
+    A second call for the same show does nothing. A failed read is not marked
+    done, so the caller can try again later.
+    """
+    if state.arrival_seeded(series.id):
+        return False
+    fetch = getattr(sonarr, "earliest_arrivals", None)
+    history: dict[int, datetime] = {}
+    if fetch is not None:
+        logger.info("Reading Sonarr history once for %s.", series.label)
+        history = fetch(
+            series.id,
+            {episode.id: episode.season_number for episode in series.episodes},
+        ) or {}
+    resolved: dict[int, datetime] = {}
+    for number, when in history.items():
+        if int(number) == 0 or when is None:
+            continue
+        resolved[int(number)] = when
+    for number in _season_numbers(series):
+        if number in resolved:
+            continue
+        added = earliest_file_added(series, number)
+        if added is not None:
+            resolved[number] = added
+    state.remember_arrivals(series.id, resolved)
+    state.mark_arrival_seeded(series.id, now)
+    return True
+
+
+def serve_arrival_seeds(stop: threading.Event, step) -> None:
+    """Seed one show at a time. step returns True when it seeded a show."""
+    while not stop.is_set():
+        worked = False
+        try:
+            worked = bool(step())
+        except Exception:
+            logger.exception("Could not seed a season arrival")
+        if stop.wait(1 if worked else 5):
+            return
