@@ -7,7 +7,9 @@ Rules:
   unmonitored in Sonarr.
 - A season 1 play, or a season 1 session, inside the watch window monitors
   every later season and searches the ones with missing aired episodes.
-- Any other play inside the window leaves the files alone.
+- A later season play inside the window monitors the next season and searches
+  it when aired episodes are missing. The watched season is not changed.
+  The highest season watched is the one that counts. Specials do not.
 - No play inside the window, and a complete Plex history, unmonitors and
   deletes every season that is not kept.
 - A season whose files were added inside the new-season grace period is
@@ -305,9 +307,7 @@ def decide(
             f"No Plex match for TVDB {tvdb}. Nothing on this series will be deleted.",
         )
 
-    season1_active = 1 in watch.active_seasons or is_recent(
-        watch.season1_last_viewed_at, now, window
-    )
+    season1_active = _season_one_played(watch, now, window)
     show_active = (
         bool(watch.active_seasons)
         or is_recent(watch.unknown_season_at, now, window)
@@ -316,6 +316,9 @@ def decide(
 
     if season1_active:
         return _restore(series, watch, now, settings, keep)
+    watched = _highest_watched_season(watch, now, window)
+    if watched is not None and watched > 1:
+        return _prepare_next_season(series, watched)
     if show_active:
         return _hold(watch, now)
     if is_recent(watch.watchlisted_at, now, window):
@@ -332,6 +335,69 @@ def decide(
         now=now,
         grace=settings.new_season_grace,
         arrivals=arrivals,
+    )
+
+
+def _season_one_played(watch: ShowWatch, now: datetime, window: timedelta) -> bool:
+    if 1 in watch.active_seasons or is_recent(watch.season1_last_viewed_at, now, window):
+        return True
+    return any(season == 1 and is_recent(when, now, window) for season, when in watch.season_plays)
+
+
+def _highest_watched_season(watch: ShowWatch, now: datetime, window: timedelta) -> int | None:
+    """Highest season playing now or played inside the watch window. Specials do not count."""
+    seasons = [season for season in watch.active_seasons if season > 0]
+    seasons.extend(
+        season
+        for season, when in watch.season_plays
+        if season > 0 and is_recent(when, now, window)
+    )
+    if not seasons:
+        return None
+    return max(seasons)
+
+
+def _season_on_series(series: SeriesSnapshot, number: int) -> bool:
+    if any(season.season_number == number for season in series.seasons):
+        return True
+    return any(episode.season_number == number for episode in series.episodes)
+
+
+def _prepare_next_season(series: SeriesSnapshot, watched: int) -> Decision:
+    """Monitor and, when episodes are missing, search the season after the one just watched.
+
+    Season ``watched`` itself is not monitored, unmonitored, or deleted.
+    """
+    nxt = watched + 1
+    if not _season_on_series(series, nxt):
+        return _quiet("hold", f"Watched S{watched}. There is no season {nxt}.")
+    episodes = [episode for episode in series.episodes if episode.season_number == nxt]
+    monitor_ids = tuple(episode.id for episode in episodes if not episode.monitored)
+    missing = [episode for episode in episodes if episode.aired and not episode.has_file]
+    season_row = next((season for season in series.seasons if season.season_number == nxt), None)
+    season_off = season_row is None or not season_row.monitored
+    downloaded = bool(episodes) and not missing and any(episode.has_file for episode in episodes)
+    if downloaded and not season_off and not monitor_ids:
+        return _quiet("hold", f"Watched S{watched}. S{nxt} already downloaded.")
+    if missing:
+        reason = f"Watched S{watched}, so S{nxt} was monitored and searched."
+    elif downloaded:
+        reason = f"Watched S{watched}, so S{nxt} was monitored. S{nxt} already downloaded."
+    else:
+        reason = f"Watched S{watched}, so S{nxt} was monitored."
+    season_map = {nxt: True} if season_off or not series.monitored else None
+    return Decision(
+        action="restore",
+        reason=reason,
+        season_monitored=season_map,
+        series_monitored=True if season_map is not None and not series.monitored else None,
+        monitor_new_items=None,
+        monitor_episode_ids=monitor_ids,
+        unmonitor_episode_ids=(),
+        delete_file_ids=(),
+        delete_seasons=(),
+        search_seasons=(nxt,) if missing else (),
+        bytes_to_free=0,
     )
 
 

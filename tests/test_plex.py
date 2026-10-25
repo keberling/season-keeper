@@ -53,6 +53,8 @@ def test_history_and_session_land_on_the_tvdb_show():
 
     activity = index.by_tvdb[100]
     assert activity.season1_last_viewed_at is not None
+    assert activity.season_last_viewed[1] == activity.season1_last_viewed_at
+    assert 2 in activity.season_last_viewed
     assert 2 in activity.active_seasons
     assert "Ada" in activity.active_users
     assert index.reliable_for_prune()

@@ -90,6 +90,7 @@ def test_playing_a_later_season_holds():
     decision = decide(office(), watch(active_seasons=frozenset({3})), NOW, policy())
     assert decision.action == "hold"
     assert decision.delete_file_ids == ()
+    assert decision.reason == "Watched S3. There is no season 4."
 
 
 def test_unmatched_show_is_not_pruned():

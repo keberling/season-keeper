@@ -232,6 +232,15 @@ class SonarrClient:
     def list_series(self) -> list[dict]:
         return self._request("GET", "/api/v3/series") or []
 
+    def get_series(self, series_id: int) -> dict | None:
+        """One show. Opening a dialog must not download the whole library."""
+        try:
+            return self._request("GET", f"/api/v3/series/{int(series_id)}")
+        except SonarrError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
     def root_folders(self) -> list[dict]:
         return self._request("GET", "/api/v3/rootfolder") or []
 
@@ -331,15 +340,20 @@ class SonarrClient:
             },
         )
 
-    def queued_seasons(self) -> set[tuple[int, int]]:
+    def queued_seasons(self, series_id: int | None = None) -> set[tuple[int, int]]:
+        """Seasons already in the download queue. Pass series_id to avoid paging every show."""
         keys: set[tuple[int, int]] = set()
         page = 1
         page_size = 200
         while page <= 50:
+            params: dict[str, object] = {"page": page, "pageSize": page_size, "includeSeries": False}
+            if series_id is not None:
+                # Sonarr filters on seriesIds. seriesId is ignored, which pages the whole queue.
+                params["seriesIds"] = int(series_id)
             data = self._request(
                 "GET",
                 "/api/v3/queue",
-                params={"page": page, "pageSize": page_size, "includeSeries": False},
+                params=params,
             )
             if isinstance(data, list):
                 records = data
@@ -348,11 +362,11 @@ class SonarrClient:
                 records = (data or {}).get("records") or []
                 total = int((data or {}).get("totalRecords") or len(records))
             for record in records:
-                series_id = record.get("seriesId")
+                record_series = record.get("seriesId")
                 season = record.get("seasonNumber")
-                if series_id is None or season is None:
+                if record_series is None or season is None:
                     continue
-                keys.add((int(series_id), int(season)))
+                keys.add((int(record_series), int(season)))
             if isinstance(data, list) or page * page_size >= total or not records:
                 break
             page += 1

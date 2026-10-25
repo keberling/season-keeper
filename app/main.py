@@ -799,11 +799,15 @@ def seed_next_arrival() -> bool:
             settings.sonarr_api_key,
             settings.http_timeout_seconds,
         )
-        match = None
-        for row in sonarr.list_series() or []:
-            if int(row.get("id") or 0) == int(series_id):
-                match = row
-                break
+        getter = getattr(sonarr, "get_series", None)
+        if callable(getter):
+            match = getter(int(series_id))
+        else:
+            match = None
+            for row in sonarr.list_series() or []:
+                if int(row.get("id") or 0) == int(series_id):
+                    match = row
+                    break
         if match is None:
             state.mark_arrival_seeded(series_id, now)
             logger.info("Sonarr no longer has show %s, so its arrival history was skipped.", series_id)

@@ -68,6 +68,7 @@ def watch_for(series: SeriesSnapshot, index: WatchIndex) -> ShowWatch:
         history_reliable=reliable,
         watchlisted_at=activity.watchlisted_at,
         watchlisted_by=activity.watchlisted_by,
+        season_plays=tuple(sorted(activity.season_last_viewed.items())),
     )
 
 
@@ -103,6 +104,46 @@ def assert_safe(series: SeriesSnapshot, decision: Decision, keep: frozenset[int]
             raise SafetyError(f"Refusing to search specials of {series.label}")
         if season in keep:
             raise SafetyError(f"Refusing to search kept season {season} of {series.label}")
+
+
+def _binge_wait_reason(reason: str, search_seasons: tuple[int, ...] | list[int], waiting: list[str]) -> str:
+    """Say when the next season was not searched because Sonarr already has it or the cooldown is open."""
+    prefix = ""
+    body = reason
+    if body.startswith("Preview only. "):
+        prefix = "Preview only. "
+        body = body[len(prefix) :]
+    if not waiting or not body.startswith("Watched S"):
+        return reason
+    season = search_seasons[0] if search_seasons else None
+    notes: list[str] = []
+    for note in waiting:
+        if season is not None and "cooldown" in note:
+            notes.append(f"S{season} search on cooldown")
+        elif season is not None and "queued" in note:
+            notes.append(f"S{season} is already queued in Sonarr")
+        else:
+            notes.append(note)
+    if any(note.startswith("S") for note in notes) and " and searched." in body:
+        body = body.replace(" and searched.", ".")
+    return prefix + body + " " + ". ".join(notes) + "."
+
+
+def _note_binge(state: State, result: SeriesResult, now: datetime) -> None:
+    """Record the binge sentence once. Repeating the same line every scan adds nothing."""
+    if not result.in_live_scope or not result.reason.startswith("Watched S"):
+        return
+    if state.last_activity_message(result.sonarr_id) == result.reason:
+        return
+    logger.info("%s", result.reason)
+    state.record_activity(
+        at=now,
+        kind="restored",
+        sonarr_id=result.sonarr_id,
+        title=result.title,
+        message=result.reason,
+        seasons=len(result.search_seasons),
+    )
 
 
 def _iso(when: datetime | None) -> str | None:
@@ -214,7 +255,9 @@ def apply_decision(
         reason = "Approval required before any files are deleted. " + reason
     if deferring:
         reason = "Queued for deletion. One show is removed at a time. " + reason
-    if waiting:
+    if decision.reason.startswith("Watched S"):
+        reason = _binge_wait_reason(reason, decision.search_seasons, waiting)
+    elif waiting:
         reason = reason + " Waiting: " + "; ".join(waiting) + "."
 
     try:
@@ -275,7 +318,7 @@ def apply_decision(
                     nbytes=decision.bytes_to_free,
                     seasons=len(decision.delete_seasons),
                 )
-            if searches_ran:
+            if searches_ran and not decision.reason.startswith("Watched S"):
                 message = restored_line(series.label, searches_ran, decision.reason)
                 logger.info("%s", message)
                 state.record_activity(
@@ -286,7 +329,9 @@ def apply_decision(
                     message=message,
                     seasons=len(searches_ran),
                 )
-            if waiting:
+            if waiting and decision.reason.startswith("Watched S"):
+                reason = _binge_wait_reason(decision.reason, decision.search_seasons, waiting)
+            elif waiting:
                 reason = decision.reason + " Waiting: " + "; ".join(waiting) + "."
         elif not settings.dry_run and _apply_keep_monitoring(series, decision, actions):
             applied = True
@@ -392,6 +437,7 @@ def execute(
                 "Outside the live allowlist, so this show was left unchanged. " + result.reason
             )
         result.in_live_scope = not settings.dry_run and not outside
+        _note_binge(state, result, now)
         if result.action != "prune":
             if series.id in dismissed:
                 state.clear_dismissed(series.id)

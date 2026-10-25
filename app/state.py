@@ -237,6 +237,21 @@ class State:
             )
             self._conn.commit()
 
+    def last_activity_message(self, sonarr_id: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT message FROM activity
+                WHERE sonarr_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(sonarr_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row[0])
+
     def list_activity(
         self,
         *,
