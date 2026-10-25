@@ -265,10 +265,25 @@
       }[season] || season || "";
     }
 
+    function bingeReason(text) {
+      const body = String(text || "")
+        .replace(/^Outside the live allowlist, so this show was left unchanged\. /, "")
+        .replace(/^Preview only\. /, "");
+      return body.indexOf("Watched S") === 0 ? String(text) : "";
+    }
+
+    function seriesBingeReason(seriesId) {
+      const current = report();
+      const rows = current && current.series ? current.series : [];
+      const row = rows.find((item) => Number(item.sonarr_id) === Number(seriesId));
+      return bingeReason(row && row.reason);
+    }
+
     function actionMeaning(row) {
       if (row.error) return "Sonarr or Plex failed while checking this show.";
       if (row.pending_approval) return "Needs approval before the later seasons are deleted. Season 1 stays.";
       if (row.dismissed) return "You dismissed this request. The files stay until you approve a delete.";
+      if (bingeReason(row.reason)) return bingeReason(row.reason);
       if (row.applied && row.action === "prune") return "Later seasons were removed from disk. Season 1 stayed.";
       if (row.applied && row.action === "restore") return "Sonarr was asked to search for the missing later seasons.";
       const meanings = {
@@ -675,6 +690,13 @@
           document.getElementById("modal-check-label").textContent = "Tell Sonarr to monitor these seasons and search for the missing episodes.";
           go.textContent = "Download missing seasons";
           go.className = "good";
+        }
+        const watched = seriesBingeReason(seriesId);
+        if (watched) {
+          const copy = document.getElementById("modal-copy");
+          if (copy.textContent.indexOf(watched) === -1) {
+            copy.textContent = watched + (copy.textContent ? " " + copy.textContent : "");
+          }
         }
         checkRow.hidden = nothing;
         go.hidden = nothing;

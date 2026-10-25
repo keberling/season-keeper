@@ -54,6 +54,7 @@ class ShowActivity:
     season1_last_viewed_at: datetime | None = None
     active_seasons: set[int] = field(default_factory=set)
     active_users: set[str] = field(default_factory=set)
+    season_last_viewed: dict[int, datetime] = field(default_factory=dict)
     unknown_season_at: datetime | None = None
     watchlisted_at: datetime | None = None
     watchlisted_by: str | None = None
@@ -95,6 +96,7 @@ class ShowWatch:
     history_reliable: bool
     watchlisted_at: datetime | None = None
     watchlisted_by: str | None = None
+    season_plays: tuple[tuple[int, datetime], ...] = ()
 
 
 @dataclass(frozen=True)

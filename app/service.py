@@ -181,7 +181,7 @@ def preview_series(
         state=state,
         settings=preview_policy,
         now=moment,
-        queue=sonarr.queued_seasons(),
+        queue=sonarr.queued_seasons(series.id),
         running_searches=sonarr.running_searches(),
         honor_cooldown=False,
         announce_preview=False,
@@ -373,7 +373,7 @@ def download_later_seasons(
         state=state,
         settings=policy,
         now=moment,
-        queue=sonarr.queued_seasons(),
+        queue=sonarr.queued_seasons(series.id),
         running_searches=sonarr.running_searches(),
         honor_cooldown=False,
         announce_preview=False,
@@ -444,6 +444,12 @@ def set_keep_all(
 
 
 def _find_series(sonarr: SonarrClient, series_id: int) -> dict:
+    getter = getattr(sonarr, "get_series", None)
+    if callable(getter):
+        row = getter(int(series_id))
+        if not row:
+            raise SeriesNotFound(f"Sonarr has no series {series_id}")
+        return row
     for row in sonarr.list_series():
         if int(row["id"]) == int(series_id):
             return row

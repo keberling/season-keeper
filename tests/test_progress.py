@@ -83,7 +83,7 @@ def test_cycle_reports_sonarr_and_plex_counts_as_work_proceeds(tmp_path):
             episode_seen.append((series_id, progress.snapshot()))
             return []
 
-        def queued_seasons(self):
+        def queued_seasons(self, series_id=None):
             return set()
 
         def running_searches(self):

@@ -78,7 +78,7 @@ def _dated_library(series, history=None):
         def ensure_tag(self, _label):
             return 99
 
-        def queued_seasons(self):
+        def queued_seasons(self, series_id=None):
             return set()
 
         def running_searches(self):

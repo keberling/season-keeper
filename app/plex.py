@@ -226,6 +226,8 @@ def build_watch_index(
             return
         if active:
             row.active_seasons.add(season)
+        if season > 0:
+            row.season_last_viewed[season] = _bump(row.season_last_viewed.get(season), viewed)
         if season == 1:
             row.season1_last_viewed_at = _bump(row.season1_last_viewed_at, viewed)
 
