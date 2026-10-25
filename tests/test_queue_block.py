@@ -224,6 +224,129 @@ def test_a_later_retry_wins_and_each_job_says_what_it_is_waiting_on():
     assert datetime.fromisoformat(capped["next_delete_at"]) == NOW + timedelta(hours=1)
 
 
+def test_the_next_delete_counts_against_the_daily_cap_before_it_is_full():
+    """Under the daily cap is not the same as able to take the next delete."""
+    old = NOW - timedelta(hours=20)
+    events = [{"at": old, "bytes": 2 * TIB}]
+    big = _delete("Dexter")
+    big["nbytes"] = 1200 * GIB
+    blocked = queue_block(
+        events=events,
+        limits=LIMITS,
+        now=NOW,
+        last_at=old,
+        jobs=[big],
+    )
+    assert blocked["block"] == BLOCK_DAILY_TB
+    assert blocked["jobs"][0]["waiting_on"] == BLOCK_DAILY_TB
+    assert datetime.fromisoformat(blocked["next_delete_at"]) == old + timedelta(days=1)
+    assert "The next delete would pass it." in blocked["block_log"]
+    assert "Deletes are waiting on the daily TB cap." in blocked["block_log"]
+    assert "Next delete at 2026-10-20 16:00 UTC." in blocked["block_log"]
+    assert blocked["caps"][2]["label"] == "Used 2 TB of 3 TB today. The next delete would pass it."
+
+    small = _delete("Fits")
+    small["nbytes"] = 100 * GIB
+    open_queue = queue_block(
+        events=events,
+        limits=LIMITS,
+        now=NOW,
+        last_at=old,
+        jobs=[small],
+    )
+    assert open_queue["block"] == BLOCK_NONE
+    assert open_queue["jobs"][0]["waiting_on"] == BLOCK_NONE
+    assert open_queue["next_delete_at"] is None
+
+    # A later delete that still fits keeps the queue moving.
+    both = queue_block(
+        events=events,
+        limits=LIMITS,
+        now=NOW,
+        last_at=old,
+        jobs=[big, small],
+    )
+    assert both["block"] == BLOCK_NONE
+
+    exact = explain_caps(events, LIMITS, NOW, old, pending_bytes=TIB)
+    assert exact["reason"] == BLOCK_NONE
+
+    alone = explain_caps([], LIMITS, NOW, pending_bytes=4 * TIB)
+    assert alone["reason"] == BLOCK_NONE
+
+    held = explain_caps(events, LIMITS, NOW, old, pending_bytes=4 * TIB)
+    assert held["reason"] == BLOCK_DAILY_TB
+    assert held["next_delete_at"] == old + timedelta(days=1)
+
+
+def test_hourly_bytes_count_the_next_delete_the_same_way():
+    recent = NOW - timedelta(minutes=40)
+    explained = explain_caps(
+        [{"at": recent, "bytes": 400 * GIB}],
+        LIMITS,
+        NOW,
+        recent,
+        pending_bytes=200 * GIB,
+    )
+    assert explained["reason"] == BLOCK_HOURLY_GB
+    assert explained["next_delete_at"] == recent + timedelta(hours=1)
+    assert "The next delete would pass it" in explained["caps"][0]["label"]
+    allowed, reason = deletion_allowed(
+        {
+            "last_at": recent.isoformat(),
+            "hour_series": 1,
+            "hour_bytes": 400 * GIB,
+            "day_bytes": 400 * GIB,
+        },
+        LIMITS,
+        NOW,
+        pending_bytes=200 * GIB,
+    )
+    assert allowed is False
+    assert "hourly" in reason.lower()
+
+
+def test_the_show_cap_counts_the_next_delete_and_allows_the_fiftieth():
+    when = NOW - timedelta(minutes=40)
+    usage = {
+        "last_at": when.isoformat(),
+        "hour_series": 49,
+        "hour_bytes": 49,
+        "day_bytes": 49,
+    }
+    allowed, reason = deletion_allowed(usage, LIMITS, NOW)
+    assert allowed is True
+    assert reason == ""
+    full, why = deletion_allowed({**usage, "hour_series": 50}, LIMITS, NOW)
+    assert full is False
+    assert "hourly show" in why.lower()
+
+    shows = [{"at": when, "bytes": 1} for _ in range(49)]
+    under = explain_caps(shows, LIMITS, NOW, when, pending_series=1)
+    assert under["reason"] == BLOCK_NONE
+    queued = queue_block(
+        events=shows,
+        limits=LIMITS,
+        now=NOW,
+        last_at=when,
+        jobs=[_delete("Fiftieth")],
+    )
+    assert queued["block"] == BLOCK_NONE
+
+    packed = [{"at": when, "bytes": 1} for _ in range(50)]
+    blocked = queue_block(
+        events=packed,
+        limits=LIMITS,
+        now=NOW,
+        last_at=when,
+        jobs=[_delete("One more")],
+    )
+    assert blocked["block"] == BLOCK_HOURLY_SHOWS
+    assert blocked["jobs"][0]["waiting_on"] == BLOCK_HOURLY_SHOWS
+    assert datetime.fromisoformat(blocked["next_delete_at"]) == when + timedelta(hours=1)
+    assert "Used 50 of 50 shows this hour" in blocked["block_log"]
+
+
 def test_the_same_cap_is_logged_when_it_changes_and_then_every_few_minutes(tmp_path):
     state = _state(tmp_path)
     assert state.should_log_block(BLOCK_PAUSED, NOW) is False

@@ -62,6 +62,7 @@ def deletion_allowed(
         elapsed = (now - last).total_seconds()
         if elapsed < gap:
             return False, "Waiting for the pause between deletes."
+    # The next delete counts as one show. Filling the cap is allowed; one past it is not.
     if int(usage.get("hour_series") or 0) >= int(limits["hourly_series"]):
         return False, "The hourly show limit has been reached."
     pending = max(0, int(pending_bytes or 0))
@@ -150,23 +151,23 @@ def _span(seconds: float) -> str:
     return f"About {days} {unit}"
 
 
-def explain_caps(events: list[dict], limits: dict, now: datetime, last_at: object = None) -> dict:
+def explain_caps(
+    events: list[dict],
+    limits: dict,
+    now: datetime,
+    last_at: object = None,
+    pending_bytes: int = 0,
+    pending_series: int = 0,
+) -> dict:
     """Usage versus each cap, and the moment a delete is allowed again.
 
-    events are ``{"at": datetime | str, "bytes": int}``. The binding reason is
-    the cap that stays closed the longest. Ties prefer the hourly data cap.
+    events are ``{"at": datetime | str, "bytes": int}``. pending_bytes is the
+    next delete. A window that is still under its cap blocks when that job
+    would cross it. The binding reason is the cap that stays closed the
+    longest. Ties prefer the hourly data cap.
     """
-    parsed = []
-    for event in events:
-        moment = _as_datetime(event.get("at"))
-        if moment is None:
-            continue
-        parsed.append({"at": moment, "bytes": int(event.get("bytes") or 0)})
-    parsed.sort(key=lambda item: item["at"])
-    hour_start = now - timedelta(hours=1)
-    day_start = now - timedelta(days=1)
-    hour_events = [item for item in parsed if item["at"] >= hour_start]
-    day_events = [item for item in parsed if item["at"] >= day_start]
+    parsed = _parsed_events(events)
+    hour_events, day_events = _usage_windows(parsed, now)
     hour_bytes = sum(item["bytes"] for item in hour_events)
     day_bytes = sum(item["bytes"] for item in day_events)
     hour_series = len(hour_events)
@@ -177,19 +178,21 @@ def explain_caps(events: list[dict], limits: dict, now: datetime, last_at: objec
     latest = _as_datetime(last_at)
     if latest is None and parsed:
         latest = parsed[-1]["at"]
+    pending = max(0, int(pending_bytes or 0))
+    shows = max(0, int(pending_series or 0))
 
     ready = now
     waits: list[tuple[datetime, str]] = []
     if latest is not None and gap > 0 and (now - latest).total_seconds() < gap:
         moment = latest + timedelta(seconds=gap)
         waits.append((moment, BLOCK_COOLDOWN))
-    series_ready = _ready_after_count(hour_events, hourly_series, timedelta(hours=1))
+    series_ready = _ready_after_count(hour_events, hourly_series, timedelta(hours=1), shows)
     if series_ready > now:
         waits.append((series_ready, BLOCK_HOURLY_SHOWS))
-    bytes_ready = _ready_after_bytes(hour_events, hourly_bytes, timedelta(hours=1))
+    bytes_ready = _ready_after_bytes(hour_events, hourly_bytes, timedelta(hours=1), pending)
     if bytes_ready > now:
         waits.append((bytes_ready, BLOCK_HOURLY_GB))
-    day_ready = _ready_after_bytes(day_events, daily_bytes, timedelta(days=1))
+    day_ready = _ready_after_bytes(day_events, daily_bytes, timedelta(days=1), pending)
     if day_ready > now:
         waits.append((day_ready, BLOCK_DAILY_TB))
     reason = BLOCK_NONE
@@ -201,7 +204,10 @@ def explain_caps(events: list[dict], limits: dict, now: datetime, last_at: objec
             "id": "hour_bytes",
             "used": hour_bytes,
             "limit": hourly_bytes,
-            "label": f"Used {_amount(hour_bytes)} of {_amount(hourly_bytes)} this hour",
+            "label": _cap_label(
+                f"Used {_amount(hour_bytes)} of {_amount(hourly_bytes)} this hour",
+                _byte_window(hour_bytes, hourly_bytes, pending),
+            ),
         },
         {
             "id": "hour_series",
@@ -213,7 +219,10 @@ def explain_caps(events: list[dict], limits: dict, now: datetime, last_at: objec
             "id": "day_bytes",
             "used": day_bytes,
             "limit": daily_bytes,
-            "label": f"Used {_amount(day_bytes)} of {_amount(daily_bytes)} today",
+            "label": _cap_label(
+                f"Used {_amount(day_bytes)} of {_amount(daily_bytes)} today",
+                _byte_window(day_bytes, daily_bytes, pending),
+            ),
         },
     ]
     return {"reason": reason, "next_delete_at": ready, "caps": caps}
@@ -232,8 +241,18 @@ def queue_block(
     restores_ahead: bool = False,
 ) -> dict:
     """Why the delete backlog is not moving, plus the same reason on each job."""
-    caps = explain_caps(events, limits, now, last_at)
     rows = list(jobs or [])
+    pending = _pending_bytes(events, limits, rows, now)
+    # One queued delete is one show. The cap blocks once that show would be one past it.
+    pending_series = 1 if _due_delete_sizes(rows, now) else 0
+    caps = explain_caps(
+        events,
+        limits,
+        now,
+        last_at,
+        pending_bytes=pending,
+        pending_series=pending_series,
+    )
     queued_deletes = [
         job for job in rows if job.get("kind") == "delete-later" and job.get("status") == "queued"
     ]
@@ -265,10 +284,11 @@ def queue_block(
     log = ""
     if reason in CAP_BLOCKS:
         label = _label_for(caps["caps"], reason)
+        sentence = label if label.endswith(".") else f"{label}."
         stamp = ""
         if next_at is not None:
             stamp = f" Next delete at {next_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}."
-        log = f"Deletes are waiting on the {reason}. {label}.{stamp}"
+        log = f"Deletes are waiting on the {reason}. {sentence}{stamp}"
     return {
         "block": reason,
         "next_delete_at": None if next_at is None else next_at.astimezone(timezone.utc).isoformat(),
@@ -318,25 +338,103 @@ def _label_for(caps: list[dict], reason: str) -> str:
     return reason
 
 
-def _ready_after_count(events: list[dict], limit: int, window) -> datetime:
-    if len(events) < limit or limit <= 0:
+def _ready_after_count(events: list[dict], limit: int, window, pending: int = 0) -> datetime:
+    """When the next show fits. A full cap already counts that next show."""
+    if limit <= 0:
         return datetime.min.replace(tzinfo=timezone.utc)
     ordered = sorted(events, key=lambda item: item["at"])
-    excess = len(ordered) - limit + 1
-    return ordered[excess - 1]["at"] + window
+    used = len(ordered)
+    extra = pending if used < limit else max(pending, 1)
+    if used + extra <= limit:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    drop = min(used, used + extra - limit)
+    if drop <= 0 or not ordered:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return ordered[drop - 1]["at"] + window
 
 
-def _ready_after_bytes(events: list[dict], limit: int, window) -> datetime:
+def _ready_after_bytes(events: list[dict], limit: int, window, pending: int = 0) -> datetime:
+    """When another delete of ``pending`` bytes fits. An empty window lets one oversized job run."""
     ordered = sorted(events, key=lambda item: item["at"])
     total = sum(item["bytes"] for item in ordered)
-    if total < limit or limit <= 0:
+    pending = max(0, int(pending or 0))
+    if _byte_window(total, limit, pending) in {None, "alone"}:
         return datetime.min.replace(tzinfo=timezone.utc)
     dropped = 0
     for event in ordered:
         dropped += event["bytes"]
-        if total - dropped < limit:
+        if _byte_window(total - dropped, limit, pending) in {None, "alone"}:
             return event["at"] + window
-    return ordered[-1]["at"] + window
+    if ordered:
+        return ordered[-1]["at"] + window
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parsed_events(events: list[dict]) -> list[dict]:
+    parsed = []
+    for event in events:
+        moment = _as_datetime(event.get("at"))
+        if moment is None:
+            continue
+        parsed.append({"at": moment, "bytes": int(event.get("bytes") or 0)})
+    parsed.sort(key=lambda item: item["at"])
+    return parsed
+
+
+def _usage_windows(parsed: list[dict], now: datetime) -> tuple[list[dict], list[dict]]:
+    hour_start = now - timedelta(hours=1)
+    day_start = now - timedelta(days=1)
+    hour_events = [item for item in parsed if item["at"] >= hour_start]
+    day_events = [item for item in parsed if item["at"] >= day_start]
+    return hour_events, day_events
+
+
+def _cap_label(label: str, state: str | None) -> str:
+    if state == "would":
+        return f"{label}. The next delete would pass it."
+    return label
+
+
+def _due_delete_sizes(jobs: list[dict], now: datetime) -> list[int]:
+    sizes = []
+    for job in jobs:
+        if job.get("kind") != "delete-later" or job.get("status") != "queued":
+            continue
+        moment = _as_datetime(job.get("not_before"))
+        if moment is not None and moment > now:
+            continue
+        sizes.append(max(0, int(job.get("nbytes") or 0)))
+    return sizes
+
+
+def _pending_bytes(events: list[dict], limits: dict, jobs: list[dict], now: datetime) -> int:
+    """Bytes of the soonest delete that would cross a cap. Zero when one still fits."""
+    sizes = _due_delete_sizes(jobs, now)
+    if not sizes:
+        return 0
+    hour_events, day_events = _usage_windows(_parsed_events(events), now)
+    hourly = int(limits["hourly_bytes"])
+    daily = int(limits["daily_bytes"])
+
+    def fits(nbytes: int) -> bool:
+        hour = sum(item["bytes"] for item in hour_events)
+        day = sum(item["bytes"] for item in day_events)
+        return _byte_window(hour, hourly, nbytes) in {None, "alone"} and _byte_window(
+            day, daily, nbytes
+        ) in {None, "alone"}
+
+    if any(fits(size) for size in sizes):
+        return 0
+    soonest: datetime | None = None
+    chosen = sizes[0]
+    for size in sizes:
+        hour_ready = _ready_after_bytes(hour_events, hourly, timedelta(hours=1), size)
+        day_ready = _ready_after_bytes(day_events, daily, timedelta(days=1), size)
+        ready = hour_ready if hour_ready >= day_ready else day_ready
+        if soonest is None or ready < soonest:
+            soonest = ready
+            chosen = size
+    return chosen
 
 
 def _amount(num: int) -> str:
