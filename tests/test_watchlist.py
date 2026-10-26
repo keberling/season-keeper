@@ -601,3 +601,174 @@ def test_the_watchlist_job_uses_its_own_interval(tmp_path, monkeypatch):
         assert changed.status_code == 200
         assert holder.scheduler.get_job("watchlist").trigger.interval == timedelta(minutes=2)
         assert holder.scheduler.get_job("cycle") is not None
+
+
+VISION_RSS = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>VisionQuest</title>
+    <category>show</category>
+    <guid>tvdb://426606</guid>
+    <author>Ken</author>
+  </item>
+</channel></rss>
+"""
+
+
+def _vision_lookup() -> dict:
+    return {
+        "title": "VisionQuest",
+        "tvdbId": 426606,
+        "seasons": [{"seasonNumber": 1, "monitored": False}],
+    }
+
+
+class _RedirectFeeds(Api):
+    """Both watchlist feeds answer with a 302. The client has to follow it."""
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "rss.example.test" and request.url.path == "/mine":
+            self.calls.append((request.method, request.url.host, request.url.path, {}, None))
+            return httpx.Response(302, headers={"Location": "https://rss.example.test/mine/final"})
+        if request.url.host == "rss.example.test" and request.url.path == "/mine/final":
+            self.calls.append((request.method, request.url.host, request.url.path, {}, None))
+            return httpx.Response(200, text=OFFICE_RSS)
+        if request.url.host == "rss.example.test" and request.url.path == "/friends":
+            self.calls.append((request.method, request.url.host, request.url.path, {}, None))
+            return httpx.Response(302, headers={"Location": "https://rss.example.test/friends/final"})
+        if request.url.host == "rss.example.test" and request.url.path == "/friends/final":
+            self.calls.append((request.method, request.url.host, request.url.path, {}, None))
+            return httpx.Response(200, text=VISION_RSS)
+        return super().handle(request)
+
+
+class _FriendsBody(Api):
+    def __init__(self):
+        super().__init__()
+        self.friends_status = 200
+        self.friends_body = "<html><title>Found</title></html>"
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "rss.example.test" and request.url.path == "/friends":
+            return httpx.Response(self.friends_status, text=self.friends_body)
+        return super().handle(request)
+
+
+def test_both_watchlist_feeds_follow_redirects(tmp_path):
+    api = _RedirectFeeds()
+    api.lookups[("show", "tvdb:73244")] = {
+        "title": "The Office",
+        "tvdbId": 73244,
+        "seasons": [{"seasonNumber": 1, "monitored": False}],
+    }
+    api.lookups[("movie", "imdb:tt1160419")] = {
+        "title": "Dune",
+        "year": 2021,
+        "tmdbId": 438631,
+        "imdbId": "tt1160419",
+    }
+    api.lookups[("show", "tvdb:426606")] = _vision_lookup()
+    state = State(tmp_path / "state.sqlite")
+    results = _run(api, _settings(), state)
+    titles = {row["title"] for row in results}
+    assert "VisionQuest" in titles
+    assert "The Office (2005)" in titles
+    paths = [call[2] for call in api.calls if call[1] == "rss.example.test"]
+    assert "/mine/final" in paths
+    assert "/friends/final" in paths
+    added = _posts(api, "sonarr.local", "/api/v3/series")
+    assert any(body.get("tvdbId") == 426606 for body in added)
+    status = state.watchlist_feed_status()
+    assert status["error"] is None
+    assert status["checked_at"]
+    assert status["last_success_at"] == status["checked_at"]
+
+
+def test_a_non_xml_feed_is_reported_and_a_later_good_fetch_adds_what_was_missed(tmp_path):
+    api = _FriendsBody()
+    api.lookups[("show", "tvdb:73244")] = {
+        "title": "The Office",
+        "tvdbId": 73244,
+        "seasons": [{"seasonNumber": 1, "monitored": False}],
+    }
+    api.lookups[("movie", "imdb:tt1160419")] = {
+        "title": "Dune",
+        "year": 2021,
+        "tmdbId": 438631,
+        "imdbId": "tt1160419",
+    }
+    api.lookups[("show", "tvdb:426606")] = _vision_lookup()
+    state = State(tmp_path / "state.sqlite")
+    # A previous error row must not hide an item that is still in the feed.
+    state.save_watchlist_item(
+        item_key="show:tvdb:426606",
+        media="show",
+        title="VisionQuest",
+        added_by="Ken",
+        plex_guid=None,
+        imdb_id=None,
+        tvdb_id=426606,
+        tmdb_id=None,
+        first_seen_at=(NOW - timedelta(days=5)).isoformat(),
+        action="error",
+        detail="The watchlist item could not be processed.",
+    )
+    first = _run(api, _settings(), state)
+    assert all(row["title"] != "VisionQuest" for row in first)
+    failed = state.watchlist_feed_status()
+    assert failed["error"] == "The Friends' Watchlist feed was not valid RSS."
+    assert failed["checked_at"]
+    assert failed["last_success_at"] is None
+    assert state.get_watchlist_item("show:tvdb:426606")["action"] == "error"
+    assert not any(body.get("tvdbId") == 426606 for body in _posts(api, "sonarr.local", "/api/v3/series"))
+
+    api.friends_body = VISION_RSS
+    second = _run(api, _settings(), state, NOW + timedelta(minutes=5))
+    vision = next(row for row in second if row["title"] == "VisionQuest")
+    assert vision["action"] == "added"
+    assert any(body.get("tvdbId") == 426606 for body in _posts(api, "sonarr.local", "/api/v3/series"))
+    recovered = state.watchlist_feed_status()
+    assert recovered["error"] is None
+    assert recovered["last_success_at"] == recovered["checked_at"]
+    assert recovered["checked_at"] != failed["checked_at"]
+
+    api.friends_body = "<html>moved</html>"
+    _run(api, _settings(), state, NOW + timedelta(minutes=10))
+    again = state.watchlist_feed_status()
+    assert again["error"] == "The Friends' Watchlist feed was not valid RSS."
+    assert again["last_success_at"] == recovered["last_success_at"]
+    assert state.get_watchlist_item("show:tvdb:426606")["action"] == "added"
+
+
+def test_health_and_the_page_show_the_watchlist_feed_error(tmp_path, monkeypatch):
+    _quiet_env(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STARTUP_DELAY_SECONDS", "3600")
+    monkeypatch.setenv("RUN_ON_STARTUP", "false")
+    from fastapi.testclient import TestClient
+
+    from app.main import app, holder
+
+    page = Path(__file__).resolve().parents[1] / "app" / "status_page.html"
+    text = page.read_text(encoding="utf-8")
+    assert "status.watchlist" in text
+    assert "Last good fetch" in text
+    assert "No successful fetch yet." in text
+
+    with TestClient(app) as client:
+        assert holder.state is not None
+        holder.state.note_watchlist_feed(
+            error="The Friends' Watchlist feed was not valid RSS.",
+            at=NOW,
+        )
+        health = client.get("/health").json()
+        assert health["watchlist"]["error"] == "The Friends' Watchlist feed was not valid RSS."
+        assert health["watchlist"]["checked_at"]
+        assert health["watchlist"]["last_success_at"] is None
+        status = client.get("/api/status").json()
+        assert status["watchlist"]["error"] == health["watchlist"]["error"]
+        holder.state.note_watchlist_feed(error=None, at=NOW + timedelta(minutes=5))
+        cleared = client.get("/health").json()["watchlist"]
+        assert cleared["error"] is None
+        assert cleared["last_success_at"]
+        assert cleared["last_success_at"] != health["watchlist"]["checked_at"]

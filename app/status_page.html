@@ -525,6 +525,14 @@
       if (current && current.history_complete === false) {
         notes.push(`<div class="warn">Plex history did not cover the full ${days}-day window, so nothing is queued for deletion this run.</div>`);
       }
+      const watchlist = status && status.watchlist;
+      if (watchlist && watchlist.error) {
+        const checked = watchlist.checked_at ? ` Last checked ${when(watchlist.checked_at)}.` : "";
+        const good = watchlist.last_success_at
+          ? ` Last good fetch ${when(watchlist.last_success_at)}.`
+          : " No successful fetch yet.";
+        notes.push(`<div class="warn">${esc(watchlist.error)}${checked}${good}</div>`);
+      }
       if (current && current.ambiguous_plays && current.ambiguous_plays.length) {
         const plays = current.ambiguous_plays;
         const names = plays.slice(0, 5).map(esc).join(", ");

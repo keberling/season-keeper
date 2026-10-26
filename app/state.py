@@ -524,6 +524,47 @@ class State:
             marks[int(tvdb_id)] = (when, str(who or "Someone"))
         return marks
 
+    def watchlist_feed_status(self) -> dict:
+        """Last watchlist fetch. error is empty after a good read."""
+        with self._lock:
+            raw = self._meta_locked("watchlist_feed")
+        if not raw:
+            return {"error": None, "checked_at": None, "last_success_at": None}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"error": None, "checked_at": None, "last_success_at": None}
+        if not isinstance(data, dict):
+            return {"error": None, "checked_at": None, "last_success_at": None}
+        error = data.get("error") or None
+        return {
+            "error": None if error is None else str(error),
+            "checked_at": data.get("checked_at") or None,
+            "last_success_at": data.get("last_success_at") or None,
+        }
+
+    def note_watchlist_feed(self, *, error: str | None, at: datetime) -> dict:
+        """Record this attempt. A good fetch clears the error and moves the last success."""
+        current = self.watchlist_feed_status()
+        checked = at.astimezone(timezone.utc).isoformat()
+        last_success = current.get("last_success_at")
+        message = (error or "").strip() or None
+        if message is None:
+            last_success = checked
+        payload = json.dumps(
+            {"error": message, "checked_at": checked, "last_success_at": last_success}
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO queue_meta (key, value) VALUES ('watchlist_feed', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (payload,),
+            )
+            self._conn.commit()
+        return {"error": message, "checked_at": checked, "last_success_at": last_success}
+
     def dismiss(self, sonarr_id: int, when: datetime) -> None:
         with self._lock:
             self._conn.execute(
