@@ -206,6 +206,7 @@ def _discover_page(client: httpx.Client, token: str, start: int, size: int) -> t
         f"{DISCOVER_HOST}/library/sections/watchlist/all",
         params={"includeGuids": 1, "X-Plex-Container-Start": start, "X-Plex-Container-Size": size},
         headers=_plex_headers(token),
+        follow_redirects=True,
     )
     response.raise_for_status()
     payload = response.json()
@@ -236,6 +237,7 @@ def fetch_metadata(client: httpx.Client, token: str, key: str) -> dict | None:
                 f"{host}/library/metadata/{key}",
                 params={"includeGuids": 1},
                 headers=headers,
+                follow_redirects=True,
             )
         except httpx.HTTPError:
             continue
@@ -270,42 +272,59 @@ def resolve_item(client: httpx.Client, token: str, item: WatchlistItem) -> Watch
     )
 
 
-def _read_rss(client: httpx.Client, url: str, label: str, default_author: str) -> list[WatchlistItem]:
+def _read_rss(client: httpx.Client, url: str, label: str, default_author: str) -> tuple[list[WatchlistItem], str | None]:
+    """Read one feed. A redirect, a non-200, or a non-XML body is an error, not an empty list."""
     try:
         response = client.get(
             url,
             headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"},
+            follow_redirects=True,
         )
     except httpx.HTTPError as exc:
         logger.warning("Could not read the %s (%s)", label, exc.__class__.__name__)
-        return []
-    if response.status_code >= 400:
+        return [], f"Could not read the {label}. The request failed."
+    if response.status_code != 200:
         logger.warning("Could not read the %s (HTTP %s)", label, response.status_code)
-        return []
+        return [], f"The {label} returned HTTP {response.status_code}."
     try:
-        return parse_rss(response.text, default_author=default_author)
+        root = ET.fromstring(response.text)
     except ET.ParseError:
         logger.warning("Could not read the %s because the feed was not valid RSS", label)
-        return []
+        return [], f"The {label} feed was not valid RSS."
+    if _local(root.tag).lower() not in {"rss", "feed", "rdf"}:
+        logger.warning("Could not read the %s because the feed was not valid RSS", label)
+        return [], f"The {label} feed was not valid RSS."
+    return parse_rss(response.text, default_author=default_author), None
 
 
-def load_watchlist(settings: Settings, client: httpx.Client) -> list[WatchlistItem]:
-    """RSS when either feed is set. Discover is the owner list only, used when both are blank."""
+def load_watchlist(settings: Settings, client: httpx.Client) -> tuple[list[WatchlistItem], list[str]]:
+    """RSS when either feed is set. Discover is the owner list only, used when both are blank.
+
+    The second value is plain-English errors. A failed feed is not treated as empty,
+    so items that are still in it are not marked seen and can be picked up later.
+    """
     feeds = settings.watchlist_rss_urls
     items: list[WatchlistItem] = []
+    errors: list[str] = []
     if feeds:
         for label, url in feeds:
             author = "You" if label == "My Watchlist" else "A friend"
-            items.extend(_read_rss(client, url, label, author))
+            found, error = _read_rss(client, url, label, author)
+            if error:
+                errors.append(error)
+                continue
+            items.extend(found)
     elif settings.plex_token.strip():
         try:
             items.extend(fetch_discover_watchlist(client, settings.plex_token.strip()))
         except httpx.HTTPError as exc:
             logger.warning("Could not read the Plex Discover watchlist (%s)", exc.__class__.__name__)
+            errors.append("Could not read the Plex Discover watchlist. The request failed.")
         except ValueError:
             logger.warning("Could not read the Plex Discover watchlist because the response was not JSON")
+            errors.append("The Plex Discover watchlist was not valid JSON.")
     else:
-        return []
+        return [], []
 
     resolved: list[WatchlistItem] = []
     seen: set[str] = set()
@@ -316,4 +335,4 @@ def load_watchlist(settings: Settings, client: httpx.Client) -> list[WatchlistIt
             continue
         seen.add(key)
         resolved.append(filled)
-    return resolved
+    return resolved, errors

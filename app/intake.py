@@ -70,7 +70,7 @@ def run_watchlist_intake(
 ) -> list[dict]:
     moment = now or datetime.now(timezone.utc)
     own_http = http is None
-    client = http or httpx.Client(timeout=settings.http_timeout_seconds)
+    client = http or httpx.Client(timeout=settings.http_timeout_seconds, follow_redirects=True)
     own_sonarr = False
     own_radarr = False
     try:
@@ -80,7 +80,12 @@ def run_watchlist_intake(
         if radarr is None and settings.movie_intake_enabled and settings.radarr_configured:
             radarr = RadarrClient(settings.radarr_base, settings.radarr_api_key, settings.http_timeout_seconds)
             own_radarr = True
-        items = load_watchlist(settings, client)
+        items, feed_errors = load_watchlist(settings, client)
+        if settings.watchlist_rss_urls or settings.plex_token.strip():
+            state.note_watchlist_feed(
+                error=" ".join(feed_errors) if feed_errors else None,
+                at=moment,
+            )
         return _process(settings, state, items, sonarr, radarr, moment)
     finally:
         if own_http:
@@ -107,6 +112,8 @@ def _process(
     for item in items:
         key = identity_key(item)
         previous = state.get_watchlist_item(key)
+        # Only a finished add is skipped. A missed item has no completed row, so the
+        # next good fetch still picks it up while it remains in the feed.
         if previous and previous["action"] in _DONE:
             _stamp(state, previous.get("tvdb_id") or item.tvdb_id, _when(previous, now), previous.get("added_by") or item.added_by)
             continue

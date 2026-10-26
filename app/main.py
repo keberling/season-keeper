@@ -995,8 +995,12 @@ def health() -> dict:
         block = view.get("block") or "none"
         next_delete_at = view.get("next_delete_at")
         caps = list(view.get("caps") or [])
+    watchlist = {"error": None, "checked_at": None, "last_success_at": None}
+    if state is not None:
+        watchlist = state.watchlist_feed_status()
     return {
         "status": "ok",
+        "watchlist": watchlist,
         "queue": {
             "queued": queued,
             "running": running,
@@ -1141,6 +1145,7 @@ def _status_body() -> dict:
         "queue": _queue_payload(),
         "next_run_at": next_run,
         "report": holder.state.load_report(),
+        "watchlist": holder.state.watchlist_feed_status(),
     }
 
 
